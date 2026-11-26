@@ -65,8 +65,9 @@ Medido em 26/11/2026 numa RTX 3060 12 GB, com Ryzen 5 5600GT e 32 GB de RAM.
   preparo das cópias de memória (~115–125 ms).
 - **Ray tracing:** o construtor das estruturas fica desligado, porque ligado derruba o FPS sem mudar a imagem. Áreas
   iluminadas só por luz indireta ficam mais escuras que no console.
-- **Em teste, +35 % de fps:** com `VICTORY_SKIP_WC_BACK=1` a mediana foi de 3,5–3,7 para 4,9–5,0 fps na RTX 3060
-  (2 sessões de cada lado). Fica desligada por padrão até confirmarmos, em mais sessões, que a imagem não muda.
+- **Cópia de volta mais barata:** pular a cópia de volta da memória write-combining (`VICTORY_SKIP_WC_BACK=1`) dá
+  4,8–5,0 fps em vez de 3,5–3,7, mas perde escritas da placa e estraga a imagem (geometria fina some). Não use; a
+  correção certa está em andamento.
 - **Programas wave64 em placas de 32 lanes (NVIDIA):** o driver recusa cerca de 400 programas de compute do pacote,
   dois deles usados nas primeiras áreas. Correção em teste para grupos de várias ondas: `VICTORY_WAVE_PAIR=1` com o
   programa em `VICTORY_WAVE_WIDE_ONLY` (um dos dois já passa no driver fora do jogo; falta a confirmação em jogo).

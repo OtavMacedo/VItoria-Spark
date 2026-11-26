@@ -4,7 +4,6 @@
 
 [ajustes]
 
-# Em teste (RTX 3060 12 GB, driver 32.0.16.1656, 2 sessoes de cada lado, cena pesada ~4.750 desenhos/quadro):
-# VICTORY_SKIP_WC_BACK=1 deixa na placa a memoria write-combining em vez de copia-la de volta:
-# mediana 3,5-3,7 -> 4,9-5,0 fps, copia de volta 63 -> 16 ms. Ainda desligada por padrao: falta confirmar em mais
-# sessoes que a imagem nao muda. Para experimentar, defina a variavel no ambiente.
+# Medido e NAO recomendado (RTX 3060, 6 sessoes): VICTORY_SKIP_WC_BACK=1 sobe a mediana de 3,5-3,7 para 4,8-5,0 fps,
+# mas perde escritas da placa (uma atualizacao posterior da pagina manda bytes antigos por cima): geometria fina
+# some e interiores ficam com faixas em todas as sessoes com a opcao. VICTORY_COPY_CHANGED=1 nao corrige.
