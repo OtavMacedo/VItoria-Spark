@@ -65,6 +65,8 @@ Medido em 26/11/2026 numa RTX 3060 12 GB, com Ryzen 5 5600GT e 32 GB de RAM.
   preparo das cópias de memória (~115–125 ms).
 - **Ray tracing:** o construtor das estruturas fica desligado, porque ligado derruba o FPS sem mudar a imagem. Áreas
   iluminadas só por luz indireta ficam mais escuras que no console.
+- **Em teste, +35 % de fps:** com `VICTORY_SKIP_WC_BACK=1` a mediana foi de 3,5–3,7 para 4,9–5,0 fps na RTX 3060
+  (2 sessões de cada lado). Fica desligada por padrão até confirmarmos, em mais sessões, que a imagem não muda.
 - **Programas wave64 em placas de 32 lanes (NVIDIA):** o driver recusa cerca de 400 programas de compute do pacote,
   dois deles usados nas primeiras áreas. A forma de 32 lanes cobre só alguns por enquanto.
 - **Memória:** com 32 GB de RAM ainda há 12–14 quadros de mais de 1 s por sessão de 9 min, quando a RAM livre acaba.
