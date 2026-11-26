@@ -811,20 +811,9 @@ fn emit_program(
     for e in &mut prims {
         e.interp = 1;
     }
-    // A mesh group's id arrives multiplied by max(threads, vertices,
-    // primitives) (the code divides by that); the thread count is in PSV0
-    // from runtime info version 2 on.
-    // shortcut: older containers fall back to the group's lane count, right
-    // when the HLSL group fills its waves (the title's do).
     let mesh_stride = match &native.io {
         crate::native::StageIo::Ms(ms) => {
-            let psv = c.part(FourCC::PSV0).map(|p| p.data);
-            let threads = psv
-                .filter(|d| crate::dxbc::u32_at(d, 0).is_ok_and(|n| n >= 48))
-                .and_then(|d| crate::dxbc::u32_at(d, 4 + 36).ok());
-            threads.map_or(ms.threads, |t| {
-                t.max(ms.max_vertices).max(ms.max_primitives)
-            })
+            mesh_group_stride(c.part(FourCC::PSV0).map(|p| p.data), ms)
         }
         _ => 0,
     };
@@ -955,6 +944,79 @@ fn signature(part: &[u8]) -> Result<Vec<container::SigElement>, ShaderError> {
         });
     }
     Ok(out)
+}
+
+/// What a mesh group's id arrives multiplied by (the console's code
+/// divides by it): max(threads, vertices, primitives). The thread count is
+/// the product of the three group dimensions in `psv` (the PSV0 part) from
+/// runtime info version 2 on.
+/// shortcut: older containers take the group's lane count for it, right
+/// when the HLSL group fills its waves.
+fn mesh_group_stride(psv: Option<&[u8]>, ms: &crate::native::MeshIo) -> u32 {
+    /// Where the three group dimensions start: behind the size dword and
+    /// the 36 bytes of runtime info versions 0 and 1.
+    const DIMENSIONS: usize = 4 + 36;
+    let threads = psv
+        .filter(|d| crate::dxbc::u32_at(d, 0).is_ok_and(|n| n >= 48))
+        .and_then(|d| {
+            let dimension = |i: usize| crate::dxbc::u32_at(d, DIMENSIONS + 4 * i).ok();
+            Some(
+                dimension(0)?
+                    .max(1)
+                    .saturating_mul(dimension(1)?.max(1))
+                    .saturating_mul(dimension(2)?.max(1)),
+            )
+        })
+        .unwrap_or(ms.threads);
+    threads.max(ms.max_vertices).max(ms.max_primitives)
+}
+
+#[cfg(test)]
+mod mesh_stride_tests {
+    use super::mesh_group_stride;
+    use crate::native::MeshIo;
+
+    fn mesh(threads: u32, max_vertices: u32, max_primitives: u32) -> MeshIo {
+        MeshIo {
+            outputs: Vec::new(),
+            clip_cntl: 0,
+            threads,
+            max_vertices,
+            max_primitives,
+            topology: 2,
+            lds_bytes: 0,
+        }
+    }
+
+    /// A PSV0 part whose runtime info is `size` bytes, with the group
+    /// dimensions `[x, y, z]` where version 2 has them.
+    fn psv(size: u32, dimensions: [u32; 3]) -> Vec<u8> {
+        let mut part = vec![0u8; 4 + size as usize];
+        part[..4].copy_from_slice(&size.to_le_bytes());
+        if size >= 48 {
+            for (i, d) in dimensions.iter().enumerate() {
+                part[40 + 4 * i..44 + 4 * i].copy_from_slice(&d.to_le_bytes());
+            }
+        }
+        part
+    }
+
+    #[test]
+    fn a_group_of_several_dimensions_counts_all_its_threads() {
+        let ms = mesh(64, 32, 16);
+        assert_eq!(mesh_group_stride(Some(&psv(48, [8, 4, 2])), &ms), 64);
+        assert_eq!(mesh_group_stride(Some(&psv(48, [128, 1, 1])), &ms), 128);
+        // More outputs than threads: the outputs' maximum.
+        assert_eq!(mesh_group_stride(Some(&psv(48, [8, 1, 1])), &ms), 32);
+    }
+
+    #[test]
+    fn an_older_container_still_takes_the_output_maximums() {
+        let part = psv(36, [0; 3]);
+        assert_eq!(mesh_group_stride(Some(&part), &mesh(32, 64, 126)), 126);
+        assert_eq!(mesh_group_stride(Some(&part), &mesh(128, 64, 126)), 128);
+        assert_eq!(mesh_group_stride(None, &mesh(32, 256, 126)), 256);
+    }
 }
 
 #[cfg(test)]
