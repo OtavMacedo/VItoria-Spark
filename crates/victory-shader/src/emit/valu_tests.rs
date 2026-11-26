@@ -1728,6 +1728,56 @@ fn legacy_mad_fuses_its_product_and_flushes_its_sources() {
     });
 }
 
+/// Legacy multiplies give the same dword with the float identities
+/// (`FLOATS`) as without, for zeros, subnormals, infinities and NaNs in
+/// every operand: a square, a cube, and products that share a factor with
+/// one of their factors.
+#[test]
+fn legacy_multiplies_are_the_same_with_the_float_identities() {
+    use super::bitcode::opt::{DEFAULT, FLOATS};
+    // v_mul_legacy_f32 vdst, src0, vsrc1
+    let mul = |dst: u8, a: u8, b: u8| vop2(0x07, dst, vgpr(a), b);
+    let programs: [Vec<u32>; 4] = [
+        vec![mul(0, 1, 1)],
+        vec![mul(4, 1, 1), mul(0, 1, 4)],
+        vec![mul(4, 1, 2), mul(0, 1, 4)],
+        vec![mul(4, 1, 2), mul(0, 4, 2)],
+    ];
+    let values = [
+        0u32,
+        0x8000_0000,
+        0x0000_0001,
+        0x807F_FFFF,
+        0x0080_0000,
+        0x1000_0000,
+        0xC020_0000,
+        0x7F7F_FFFF,
+        0xFF80_0000,
+        0x7FC0_0000,
+    ];
+    let cases: Vec<[u32; 4]> = values
+        .iter()
+        .flat_map(|&a| values.map(|b| [a, b, 0, 0]))
+        .collect();
+    if Host::new(false).is_err() && Host::new(true).is_err() {
+        eprintln!("no SM 6.6 host or WARP device; skipped");
+        return;
+    }
+    for words in &programs {
+        let [plain, folded] = [DEFAULT, DEFAULT | FLOATS]
+            .map(|passes| super::with_shader_opt(passes, || build_valu_cs(words)));
+        assert_ne!(plain.dxil, folded.dxil, "the pass changes {words:08x?}");
+        let mut want = std::collections::HashMap::new();
+        run_cases(&plain, &cases, |backend, i, _, got| {
+            want.insert((backend.to_owned(), i), got);
+        });
+        run_cases(&folded, &cases, |backend, i, inputs, got| {
+            let plain = want[&(backend.to_owned(), i)];
+            assert_eq!(got, plain, "{backend}: {words:08x?} of {inputs:08x?}");
+        });
+    }
+}
+
 /// A dispatch spread across z past 65,535 groups in x
 /// (`USER_DISPATCH_SPREAD`): the program sees the group id the title asked
 /// for, `(x + z * row)`, and the groups past the asked count do nothing.

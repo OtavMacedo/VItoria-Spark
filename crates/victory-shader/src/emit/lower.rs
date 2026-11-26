@@ -24,6 +24,8 @@ use crate::structure::{Atom, Bool, LaneExit, Structured};
 /// it shares the emitter's state.
 #[path = "intersect.rs"]
 pub(super) mod intersect;
+#[path = "quad.rs"]
+mod quad;
 
 type Why = &'static str;
 
@@ -4858,9 +4860,15 @@ impl<'a> Lower<'a> {
     }
 
     /// `x` of lane `src` (in this lane's quad) through quad reads, whose
-    /// lane must be a constant.
-    fn quad_pick(&mut self, x: V, src: V) -> V {
+    /// lane must be a constant. `from` is `src`'s place in the quad by
+    /// `lane`'s own place, where the instruction fixes it.
+    fn quad_pick(&mut self, x: V, src: V, lane: V, from: Option<[u32; 4]>) -> V {
         self.s.flags |= flags::WAVE_OPS;
+        if let Some(from) = from
+            && super::shader_opt() & super::bitcode::opt::QUADS != 0
+        {
+            return self.quad_permute(x, lane, from);
+        }
         let c = self.cur;
         let three = self.s.m.i32(3);
         let q = self.s.m.bin(c, Bin::And, src, three);
@@ -5042,7 +5050,7 @@ impl<'a> Lower<'a> {
                 self.s.m.bin(c, Bin::Xor, t, xor)
             };
             let r = if mesh_quad || self.helpers_read(quad) {
-                self.quad_pick(x, src)
+                self.quad_pick(x, src, lane, Some(quad::swizzle_places(offset)))
             } else {
                 self.read_lane(x, src)
             };
@@ -7430,7 +7438,11 @@ impl<'a> Lower<'a> {
             }
         };
         let mut r = if mesh_quad || self.helpers_read(quad) {
-            self.quad_pick(x, src)
+            let from = match dpp {
+                Dpp::Row { ctrl, .. } if quad => Some(quad::permuted_places(ctrl.into())),
+                _ => None,
+            };
+            self.quad_pick(x, src, lane, from)
         } else {
             self.read_lane(x, src)
         };

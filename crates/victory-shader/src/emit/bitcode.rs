@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 
 pub mod census;
+mod floats;
 pub mod opt;
+mod reads;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct Ty(u32);

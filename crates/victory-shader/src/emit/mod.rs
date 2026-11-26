@@ -188,7 +188,7 @@ pub fn group_sync() -> u8 {
 /// is exact, so the switch is for telling a translator fault from a
 /// clean-up fault, and for measuring what the clean-up is worth.
 /// `VICTORY_SHADER_OPT`:
-/// - unset: every pass except `WIDE` below (447).
+/// - unset: every pass except `WIDE` and the unmeasured ones below (447).
 /// - `0`: none (the module as the lowering made it).
 /// - a number (decimal or `0x` hex): those passes; 1 dead code, 2 constants
 ///   and identities, 4 one instruction for one value, 8 what a branch taken
@@ -198,7 +198,11 @@ pub fn group_sync() -> u8 {
 ///   has one), 64 the dwords of one console load read by one call for every
 ///   four (not on unless asked), 128 pure loop-invariant code motion, 256
 ///   adjacent and read-after-read redundant barrier elimination (`511` is
-///   every pass with it).
+///   every pass with it). Not on unless asked for, until a card has
+///   measured them: 512 one read for one place in every block below it in
+///   a program that writes no resource memory, 1024 a quad permutation
+///   that reads only the lanes it names, 2048 identities of the zero
+///   factor rule of legacy multiplies (`4031` is every pass but 64).
 ///
 /// Part of the translation: the shader cache keys on it (`victory-gpu`'s
 /// does).
@@ -960,14 +964,15 @@ mod tests {
     #[test]
     fn the_clean_up_switch_parses_or_runs_every_pass() {
         let (all, usual) = (super::bitcode::opt::ALL, super::bitcode::opt::DEFAULT);
-        assert_eq!(usual, 447, "the passes on by default (all except WIDE)");
-        assert_eq!(all, 511);
+        assert_eq!(usual, 447, "the passes on by default");
+        assert_eq!(all, 4095);
         assert_eq!(parse_shader_opt(None), usual);
         assert_eq!(parse_shader_opt(Some("0")), 0);
         assert_eq!(parse_shader_opt(Some(" 1 ")), 1);
         assert_eq!(parse_shader_opt(Some("0x1")), 1);
         assert_eq!(parse_shader_opt(Some("447")), usual);
-        assert_eq!(parse_shader_opt(Some("511")), all);
+        assert_eq!(parse_shader_opt(Some("511")), 511);
+        assert_eq!(parse_shader_opt(Some("4031")), all & !64);
         assert_eq!(parse_shader_opt(Some("0xffffffff")), all);
         assert_eq!(parse_shader_opt(Some("on")), usual);
     }
@@ -2142,17 +2147,13 @@ mod barycentric_tests {
         pixel(&words, PERSP_CENTER).unwrap()
     }
 
-    #[test]
+    /// A vertex shader that passes POSITION and TEXCOORD through, with
+    /// TEXCOORD in the same output row as the translated pixel shader's
+    /// input signature.
     #[cfg(windows)]
-    fn first_half_values_render_on_hardware_and_warp() {
+    fn pass_through_vs() -> HostShader {
         use super::bitcode::{Attr, Term};
-        use super::host::{Draw, Host};
         use super::shader::Shader;
-        let _one = super::valu_tests::ONE_AT_A_TIME
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Pass POSITION and TEXCOORD through, with TEXCOORD in the same
-        // output row as the translated pixel shader's input signature.
         let mut s = Shader::new(false);
         s.inputs = vec![element("POSITION", 0, 0), element("TEXCOORD", 0, 1)];
         for e in &mut s.inputs {
@@ -2191,6 +2192,17 @@ mod barycentric_tests {
             root_indexed_views: Vec::new(),
         };
         validate(&vs);
+        vs
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn first_half_values_render_on_hardware_and_warp() {
+        use super::host::{Draw, Host};
+        let _one = super::valu_tests::ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let vs = pass_through_vs();
         // One triangle covers an 8x8 target, with attribute values 2, 6, 10.
         let vertices = [
             -1.0, 1.0, 0.5, 1.0, 2.0, 0.0, 0.0, 0.0, -1.0, -3.0, 0.5, 1.0, 6.0, 0.0, 0.0, 0.0, 3.0,
@@ -2256,6 +2268,81 @@ mod barycentric_tests {
         }
         if ran == 0 {
             eprintln!("no SM 6.6 host with barycentrics; GPU checks skipped");
+        }
+    }
+
+    /// A pixel program that exports attribute 0's x as the quad lane
+    /// `perm` names reads it (`ds_swizzle_b32`, two bits a place), or as
+    /// the pixel itself has it (`None`).
+    fn swizzled_pixel(perm: Option<u32>) -> HostShader {
+        let [e0, e1] = exp_mrt0(if perm.is_some() { 3 } else { 2 });
+        let mut words = vec![
+            0xC808_0000, // v_interp_p1_f32 v2, v0, attr0.x
+            0xC809_0001, // v_interp_p2_f32 v2, v1, attr0.x
+        ];
+        if let Some(perm) = perm {
+            // ds_swizzle_b32 v3, v2 offset:0x8000 | perm
+            words.extend([0xD8D4_8000 | perm, 0x0300_0002]);
+        }
+        words.extend([e0, e1, 0xBF81_0000]);
+        pixel(&words, PERSP_CENTER).unwrap()
+    }
+
+    /// Quad permutations give each pixel the value of the pixel of its
+    /// quad the permutation names, the same with `QUADS` (which reads only
+    /// the lanes named) as without, on the hardware adapter and WARP.
+    #[test]
+    #[cfg(windows)]
+    fn quad_permutations_read_the_named_pixel_with_and_without_the_pass() {
+        use super::bitcode::opt::{DEFAULT, QUADS};
+        use super::host::{Draw, Host};
+        let _one = super::valu_tests::ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let vs = pass_through_vs();
+        // One triangle covers an 8x8 target: every quad is whole.
+        let vertices = [
+            -1.0, 1.0, 0.5, 1.0, 2.0, 0.0, 0.0, 0.0, -1.0, -3.0, 0.5, 1.0, 6.0, 0.0, 0.0, 0.0, 3.0,
+            1.0, 0.5, 1.0, 10.0, 0.0, 0.0, 0.0,
+        ];
+        let mut ran = 0;
+        for (backend, warp) in [("hardware", false), ("WARP", true)] {
+            let Ok(host) = Host::new(warp) else { continue };
+            let draw = |ps: &HostShader| {
+                validate(ps);
+                let (root, pso) = host.pipeline(&vs, ps).expect("pipeline");
+                let d = Draw {
+                    roots: Vec::new(),
+                    textures: &[],
+                    samplers: &[],
+                    vertices: &vertices,
+                    stride: 32,
+                    size: (8, 8),
+                    mesh_groups: 0,
+                };
+                let out = host.draw(&root, &pso, &d).expect("draw");
+                out.iter().map(|t| t[0].to_bits()).collect::<Vec<u32>>()
+            };
+            let own = draw(&swizzled_pixel(None));
+            // Identity, one lane for all, the two swaps a derivative
+            // takes, the reverse, and three lanes named.
+            for perm in [0xE4, 0x00, 0x55, 0xFF, 0xB1, 0x4E, 0x1B, 0x24] {
+                let [plain, fixed] = [DEFAULT, DEFAULT | QUADS]
+                    .map(|passes| with_shader_opt(passes, || swizzled_pixel(Some(perm))));
+                assert_ne!(plain.dxil, fixed.dxil, "the pass changes the program");
+                let (plain, fixed) = (draw(&plain), draw(&fixed));
+                assert_eq!(plain, fixed, "{backend} perm {perm:#x}");
+                for (n, &got) in fixed.iter().enumerate() {
+                    let (x, y) = (n % 8, n / 8);
+                    let from = (perm >> (2 * (x % 2 + y % 2 * 2)) & 3) as usize;
+                    let source = (y & !1) * 8 + (x & !1) + from / 2 * 8 + from % 2;
+                    assert_eq!(got, own[source], "{backend} perm {perm:#x} pixel {n}");
+                }
+            }
+            ran += 1;
+        }
+        if ran == 0 {
+            eprintln!("no SM 6.6 device; GPU checks skipped");
         }
     }
 

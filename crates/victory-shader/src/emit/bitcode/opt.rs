@@ -38,6 +38,12 @@
 //!   (`space 3`) read phases bounded by a covering group+TGSM barrier before
 //!   and either a covering barrier or shader return after, with no intervening
 //!   stores, atomics, resource/lane calls, or control-flow edges.
+//! - [`READS`]: a read of resource memory gives the result of an equal
+//!   read in any block every path to it has run, in a program that writes
+//!   no resource memory (`reads.rs`).
+//! - [`FLOATS`]: identities of the zero factor rule the lowering adds to
+//!   legacy multiplies: none for a square, one test for a factor of a
+//!   factor (`floats.rs`).
 //!
 //! Which passes run is `emit::shader_opt()` (`VICTORY_SHADER_OPT`), part of
 //! the translation and so of the shader cache's key.
@@ -77,14 +83,25 @@ pub const WIDE: u32 = 64;
 pub const LICM: u32 = 128;
 /// Redundant adjacent and read-after-read `dx.op.barrier(mode)` elimination within a block.
 pub const BARRIERS: u32 = 256;
+/// One read for one place in every block below it, in a program that
+/// writes no resource memory (`reads.rs`).
+pub const READS: u32 = 512;
+/// Not a pass over the module: the lowering of a quad permutation reads
+/// only the quad lanes the permutation names, not all four (`quad.rs`).
+pub const QUADS: u32 = 1024;
+/// Identities of the zero factor rule the lowering adds to legacy
+/// multiplies (`floats.rs`).
+pub const FLOATS: u32 = 2048;
+/// The passes no card has measured yet: off unless asked for.
+pub const UNMEASURED: u32 = READS | QUADS | FLOATS;
 /// The passes over the module.
-pub const MODULE: u32 = DEAD | FOLD | REUSE | FACTS | LOADS | LICM | BARRIERS;
+pub const MODULE: u32 = DEAD | FOLD | REUSE | FACTS | LOADS | LICM | BARRIERS | READS | FLOATS;
 /// Every pass.
-pub const ALL: u32 = MODULE | FIRST | WIDE;
+pub const ALL: u32 = MODULE | FIRST | WIDE | QUADS;
 /// The passes that run when nothing says which: every one but [`WIDE`],
 /// which no card has shown a gain for yet (`VICTORY_SHADER_OPT=511` asks
-/// for it).
-pub const DEFAULT: u32 = ALL & !WIDE;
+/// for it), and the [`UNMEASURED`] ones.
+pub const DEFAULT: u32 = ALL & !WIDE & !UNMEASURED;
 
 /// What the instructions a module writes use, of the features a shader
 /// declares by flag (the validator's "flags must match usage").
@@ -219,7 +236,7 @@ enum PtrPath {
 /// Fine-grained classification of `Effect::Writes` `dx.op.*` calls for
 /// non-aliasing tracking and barrier elimination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteKind {
+pub(super) enum WriteKind {
     /// Stage output sinks (`storeOutput*`, `emitIndices`, etc.): never alias
     /// buffers, textures, LDS, private memory, or wave lanes.
     OutputOnly,
@@ -233,7 +250,7 @@ enum WriteKind {
     All,
 }
 
-fn write_kind(f: &Func) -> WriteKind {
+pub(super) fn write_kind(f: &Func) -> WriteKind {
     let name = f.name.strip_prefix("dx.op.").unwrap_or(&f.name);
     if name == "barrier" {
         WriteKind::Barrier
@@ -449,14 +466,14 @@ pub(super) fn effect(f: &Func) -> Effect {
 impl Module {
     /// Runs the clean-up passes named in `passes` ([`ALL`]: every one).
     pub(crate) fn optimise(&mut self, passes: u32) {
-        if passes & (FOLD | REUSE | FACTS | LOADS | LICM | BARRIERS) != 0 {
+        if passes & (FOLD | REUSE | FACTS | LOADS | LICM | BARRIERS | READS | FLOATS) != 0 {
             // Values merged in one round can make two joins the same in
             // the next (a loop's registers that only go round), a branch
             // that goes one way leaves blocks with one way in, and LICM
             // exposes hoisted pure values to REUSE/FOLD outside the loop.
             for _ in 0..4 {
                 let mut changed = false;
-                if passes & (FOLD | REUSE | FACTS | LOADS | BARRIERS) != 0 {
+                if passes & (FOLD | REUSE | FACTS | LOADS | BARRIERS | READS | FLOATS) != 0 {
                     changed |= self.merge(passes);
                 }
                 if passes & FOLD != 0 {
@@ -1510,6 +1527,7 @@ impl Module {
         let effects = self.effects();
         let tree = self.dominator_tree();
         let escaped = self.escaped_globals(&tree.order);
+        let frozen = passes & READS != 0 && self.memory_frozen(&effects);
         let mut repl: Vec<Option<V>> = vec![None; self.insts.len()];
         let mut changed = false;
         // Joins of one value: until none is left (one gone can leave
@@ -1683,9 +1701,29 @@ impl Module {
                     changed = true;
                     continue;
                 }
+                if passes & FLOATS != 0
+                    && let Some(v) = self.float_identity(i)
+                {
+                    repl[i as usize] = Some(v);
+                    changed = true;
+                    continue;
+                }
                 let class = self.class(&effects, i);
                 if passes & REUSE != 0
                     && class == Effect::Pure
+                    && let Some(key) = self.key(i)
+                {
+                    if let Some(&first) = known.get(&key) {
+                        repl[i as usize] = Some(first);
+                        changed = true;
+                        continue;
+                    }
+                    known.insert(key.clone(), V::Inst(i));
+                    added.push(key);
+                }
+                if frozen
+                    && class == Effect::Reads
+                    && self.reads_below(i)
                     && let Some(key) = self.key(i)
                 {
                     if let Some(&first) = known.get(&key) {
