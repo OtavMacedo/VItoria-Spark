@@ -86,3 +86,6 @@ O projeto recebe melhorias para todas as placas ao mesmo tempo, e cada fabricant
   confirma nos comentários. A revisão pede essa confirmação quando houver risco para o outro fabricante.
 - **Rótulos:** `nvidia`, `amd`, `intel` e `todas-as-placas`. Issues e PRs levam o rótulo da placa em que o problema
   ou a medição aconteceu.
+- **Sistema:** o Spark roda no Windows e, pelo Wine/Proton com vkd3d-proton, no Linux ([docs/linux.md](docs/linux.md)).
+  Todo PR diz em que sistema foi testado. Problema que só acontece no Linux leva também o rótulo `linux`, com a saída
+  de `scripts/linux/spark.sh diagnostico`.

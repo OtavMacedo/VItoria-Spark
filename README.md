@@ -4,11 +4,14 @@
   <img src="assets/banner-claro.svg" alt="VItoria Spark: compatibilidade Xbox Series no Windows, em Rust e Direct3D 12">
 </picture>
 
-![Licença GPL-3.0](https://img.shields.io/badge/licen%C3%A7a-GPL--3.0-2ea44f) ![Windows x64](https://img.shields.io/badge/plataforma-Windows%20x64-0078d4) ![Rust](https://img.shields.io/badge/Rust-est%C3%A1vel-dea584) ![Projeto brasileiro](https://img.shields.io/badge/projeto-brasileiro-009c3b) [![AutoPilot Mode](https://img.shields.io/badge/%E2%9A%A1%20AutoPilot%20Mode-contribua%20com%20IA-facc15)](#-autopilot-mode)
+![Licença GPL-3.0](https://img.shields.io/badge/licen%C3%A7a-GPL--3.0-2ea44f) ![Windows x64](https://img.shields.io/badge/plataforma-Windows%20x64-0078d4) ![Linux (Wine/Proton)](https://img.shields.io/badge/Linux-Wine%2FProton-fcc624) ![Rust](https://img.shields.io/badge/Rust-est%C3%A1vel-dea584) ![Projeto brasileiro](https://img.shields.io/badge/projeto-brasileiro-009c3b) [![AutoPilot Mode](https://img.shields.io/badge/%E2%9A%A1%20AutoPilot%20Mode-contribua%20com%20IA-facc15)](#-autopilot-mode)
 
-**VItoria Spark** é uma camada de compatibilidade que roda software de Xbox Series no Windows x64. É um projeto
+**VItoria Spark** é uma camada de compatibilidade que roda software de Xbox Series no PC x64. É um projeto
 brasileiro, fork do [VIctory](https://github.com/Marvisak/VIctory), focado em duas coisas: **mais quadros por segundo**
 e **texturas e imagem corretas**.
+
+Até aqui é compatível com **Windows e Linux**: no Windows roda direto (é onde estão as medições abaixo); no Linux
+roda pelo Wine ou Proton com vkd3d-proton, como relatado pela comunidade ([docs/linux.md](docs/linux.md)).
 
 O código do console já é x86-64, então roda direto no processador do PC. O Spark fornece o que falta: carregador,
 serviços do sistema, áudio, entrada e a tradução da GPU do console para Direct3D 12 (shaders GFX10 → DXIL).
@@ -113,8 +116,11 @@ Mediana das amostras de quadro no mundo, duas execuções de 9 minutos com cache
 
 - Windows 10/11 x64 e GPU com Direct3D 12, Shader Model 6.6 e mesh shaders (NVIDIA RTX 20 ou mais nova, AMD RX 6000
   ou mais nova).
+- Ou Linux x86-64 com Wine 10+ (ou Proton), vkd3d-proton 3.x e driver Vulkan com `VK_EXT_mesh_shader`. Relatado
+  pela comunidade em NVIDIA; ainda não verificado pelos mantenedores ([docs/linux.md](docs/linux.md)).
 - 32 GB de RAM recomendados.
-- Para compilar: Rust estável (versão em `rust-toolchain.toml`) e Visual Studio Build Tools com o Windows SDK.
+- Para compilar: Rust estável (versão em `rust-toolchain.toml`) e Visual Studio Build Tools com o Windows SDK (no Linux:
+  cargo-xwin, clang e lld).
 
 ## Compilar e rodar
 
@@ -126,6 +132,14 @@ copy victory.example.toml victory.toml   # ajuste game_dir e cache_dir
 
 `victory.exe config` mostra a configuração resolvida. Build de diagnóstico, com instrumentação extra:
 `cargo build --profile diag -p victory --features diagnostics`.
+
+No Linux:
+
+```bash
+scripts/linux/spark.sh preparar   # confere o que falta e cria o prefixo do Wine
+scripts/linux/spark.sh compilar   # o mesmo .exe, compilado com cargo-xwin
+scripts/linux/spark.sh rodar <pasta do título>
+```
 
 ## Contribuir
 

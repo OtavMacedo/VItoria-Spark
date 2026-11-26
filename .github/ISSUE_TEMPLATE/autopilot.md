@@ -19,5 +19,6 @@ labels: autopilot
 
 ## Ambiente
 - Fabricante da placa: NVIDIA / AMD / Intel (adicione o rótulo `nvidia`, `amd` ou `intel`)
-- GPU e driver · CPU · RAM · Windows · commit do Spark
+- GPU e driver · CPU · RAM · commit do Spark
+- Sistema: Windows / Linux (rótulo `linux`; cole a saída de `scripts/linux/spark.sh diagnostico`)
 - Perfil aplicado (linha "perfil de placa aplicado" do resumo)

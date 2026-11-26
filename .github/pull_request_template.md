@@ -13,6 +13,8 @@ Fecha #
 
 GPU e driver · resolução · CPU · RAM
 
+Sistema: - [ ] Windows - [ ] Linux (Wine/Proton + vkd3d-proton)
+
 Testado em: - [ ] NVIDIA - [ ] AMD - [ ] Intel. Se mudar código comum ou `perfis/comum.toml`, diga o risco para as
 placas em que não foi testado.
 
