@@ -212,7 +212,7 @@ fn metadata(
     let ram = system::memory_mb().map(|(total, _)| total);
     let mut settings: Vec<(String, String)> = std::env::vars()
         .filter(|(k, _)| k.starts_with("VICTORY_") || k.starts_with("SPARK_"))
-        .map(|(k, v)| (k, anon.apply(&v).into_owned()))
+        .map(|(k, v)| (k, anon::settings_value(&anon.apply(&v))))
         .collect();
     settings.sort();
     let mut env_obj = json::Obj::new();

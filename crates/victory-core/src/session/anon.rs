@@ -57,17 +57,63 @@ impl Anonymizer {
     }
 
     /// From this process's environment, with the title's folder if known.
+    ///
+    /// The folders a run is told about (cache, logs, captures) and the
+    /// folder that holds the title's become `<CAMINHO>`: their names are the
+    /// user's choice and can say what the title is.
     pub fn from_env(game: Option<&std::path::Path>) -> Self {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let home = var("USERPROFILE").or_else(|| var("HOME"));
         let user = var("USERNAME").or_else(|| var("USER"));
-        let game = game.map(|g| g.to_string_lossy().into_owned());
-        Anonymizer::new(
+        let game_dir = game
+            .map(|g| g.to_string_lossy().into_owned())
+            .or_else(|| var("VICTORY_GAME_DIR"));
+        let mut extra: Vec<String> = [
+            "VICTORY_CACHE_DIR",
+            "SPARK_LOG_DIR",
+            "VICTORY_CAPTURE",
+            "VICTORY_AUDIO_CAPTURE",
+        ]
+        .iter()
+        .filter_map(|k| var(k))
+        .collect();
+        if let Some(parent) = game_dir
+            .as_deref()
+            .and_then(|g| std::path::Path::new(g.trim_end_matches(['\\', '/'])).parent())
+        {
+            extra.push(parent.to_string_lossy().into_owned());
+        }
+        let mut a = Anonymizer::new(
             home.as_deref(),
-            game.as_deref(),
+            game_dir.as_deref(),
             user.as_deref(),
             var("COMPUTERNAME").as_deref(),
-        )
+        );
+        a.add_paths(extra.iter().map(String::as_str), "<CAMINHO>");
+        a
+    }
+
+    /// Adds folders to replace with `to`, keeping the longest-first order.
+    pub fn add_paths<'p>(&mut self, paths: impl IntoIterator<Item = &'p str>, to: &'static str) {
+        for p in paths {
+            let p = p.trim_end_matches(['\\', '/']);
+            if p.len() < 4 {
+                continue;
+            }
+            let back = p.replace('/', "\\");
+            for v in [
+                back.clone(),
+                back.replace('\\', "/"),
+                back.replace('\\', "\\\\"),
+            ] {
+                self.needles.push((v.to_ascii_lowercase(), to));
+            }
+        }
+        self.needles.sort_by(|a, b| {
+            let path = |s: &str| s.contains(['\\', '/']);
+            path(&b.0).cmp(&path(&a.0)).then(b.0.len().cmp(&a.0.len()))
+        });
+        self.needles.dedup();
     }
 
     pub fn apply<'a>(&self, s: &'a str) -> Cow<'a, str> {
@@ -81,6 +127,21 @@ impl Anonymizer {
             Some(replaced) => Cow::Owned(replaced),
             None => out,
         }
+    }
+}
+
+/// A setting's value as the session files show it: an absolute path that is
+/// still there after [`Anonymizer::apply`] becomes `<CAMINHO>`, since a
+/// setting may name any folder of the user's.
+pub fn settings_value(v: &str) -> String {
+    let b = v.as_bytes();
+    let drive =
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    let unc = v.starts_with("\\\\") || v.starts_with("//");
+    if drive || unc {
+        "<CAMINHO>".to_owned()
+    } else {
+        v.to_owned()
     }
 }
 
@@ -212,6 +273,19 @@ mod tests {
     fn short_or_missing_values_are_ignored() {
         let a = Anonymizer::new(Some("C:\\"), None, Some("ab"), None);
         assert_eq!(a.apply(r"C:\abc ab"), r"C:\abc ab");
+    }
+
+    #[test]
+    fn named_folders_and_leftover_paths_are_hidden() {
+        let mut a = Anonymizer::new(None, Some(r"E:\Pasta\Titulo"), None, None);
+        a.add_paths([r"E:\Pasta", r"E:\Cache\x"], "<CAMINHO>");
+        assert_eq!(a.apply(r"E:\Pasta\Titulo\a.exe"), r"<JOGO>\a.exe");
+        assert_eq!(a.apply(r"E:\Pasta\outra\b"), r"<CAMINHO>\outra\b");
+        assert_eq!(a.apply("e:/cache/x/y"), "<CAMINHO>/y");
+        assert_eq!(super::settings_value(r"F:\qualquer\coisa"), "<CAMINHO>");
+        assert_eq!(super::settings_value(r"\\servidor\pasta"), "<CAMINHO>");
+        assert_eq!(super::settings_value("<CAMINHO>"), "<CAMINHO>");
+        assert_eq!(super::settings_value("1920x1080"), "1920x1080");
     }
 
     #[test]
