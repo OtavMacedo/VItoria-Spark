@@ -89,6 +89,7 @@ def amostras_do_mundo(log: Path, desde: int) -> tuple[int, int]:
     return desde + fim, novas
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HASH = re.compile(r"(?:hash=|\[(?:compute|vertex|pixel|mesh|amplification|geometry|hull|domain) )([0-9a-f]{16})")
 
 
@@ -107,7 +108,7 @@ def aquecer(args: list[str]) -> int:
     wave, views = None, None
     logs = sorted(BASE.glob("*/saida.log"), key=lambda q: q.stat().st_mtime)
     for log in logs:
-        texto = log.read_text(encoding="utf-8", errors="replace")
+        texto = ANSI.sub("", log.read_text(encoding="utf-8", errors="replace"))
         hashes.update(HASH.findall(texto))
         wave = (re.findall(r"host wave lanes min=\d+ max=(\d+)", texto) or [wave])[-1]
         views = (re.findall(r"host view heaps hold (\d+) views", texto) or [views])[-1]
