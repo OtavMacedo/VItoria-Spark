@@ -65,6 +65,18 @@ impl Meter {
         let [back_ms, back_mb] =
             [0, 1].map(|i| COPY_BACK[i].swap(0, Ordering::Relaxed) as f64 / [1e3, 1e6][i] / frames);
         let dropped = crate::draw::take_dropped() as f64 / frames;
+        victory_core::session::frame_window(victory_core::session::summary::Rate {
+            fps,
+            ms,
+            preparing: cpu,
+            copies: copy_ms,
+            textures: texture_ms,
+            gpu,
+            copy_back: back_ms,
+            draws,
+            dropped,
+            world: false,
+        });
         let indirect = crate::list::take_indirect() as f64 / frames;
         let mesh_largest = MESH_GROUPS[0].swap(0, Ordering::Relaxed);
         let mesh_groups = MESH_GROUPS[1].swap(0, Ordering::Relaxed) as f64 / frames;

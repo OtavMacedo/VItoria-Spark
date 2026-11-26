@@ -68,6 +68,10 @@ Não há eventos por draw; por quadro há só uma soma em memória.
 | `SPARK_LOG_JSON=0` | não grava `eventos.jsonl` (o resumo continua) |
 | `SPARK_LOG_JSON_LEVEL=warn\|info\|debug\|trace` | nível mínimo gravado no `eventos.jsonl` (padrão `info`; debug/trace só em build diag) |
 | `SPARK_GIT_HASH=<hash>` | (na compilação) o commit que a 1ª linha informa |
+| `SPARK_STABLE_DRAWS=<n>` | desenhos por quadro a partir dos quais a cena é a estável (padrão 4500) |
+| `SPARK_STABLE_AFTER_S=<s>` | segundos depois do 1º quadro do mundo antes da cena estável (padrão 60) |
+| `SPARK_AB=CHAVE[=a/b][+CHAVE2...][:s]` | A/B dentro da execução (ver abaixo) |
+| `SPARK_PLAN=<plano.toml>` | vários A/B em sequência na mesma execução (ver abaixo) |
 
 `VICTORY_LOG` continua filtrando só o console.
 
@@ -75,9 +79,16 @@ Não há eventos por draw; por quadro há só uma soma em memória.
 
 - **Visão geral**: duração, tempo até o 1º quadro do mundo (10 quadros
   seguidos com 6+ submissões ao host), motivo do fim.
-- **Quadros**: p50/p95/p99/máx em ms, do mundo e de todos; quadros > 1 s.
+- **Quadros**: p50/p95/p99/máx em ms, da cena estável, do mundo e de todos;
+  quadros > 1 s. A **cena estável** começa na primeira janela de 1 s do
+  medidor com 4.500+ desenhos por quadro, 60 s ou mais depois do 1º quadro do
+  mundo: o carregamento e a cena meio carregada (800–3.000 desenhos) ficam
+  fora. Compare execuções por ela.
 - **Composição do quadro**: medianas das linhas de fps (só mundo, se houver)
-  de preparando, cópias, texturas, GPU, cópia de volta, draws e descartados.
+  de preparando, cópias, texturas, GPU, cópia de volta, draws e descartados;
+  e as mesmas medianas de **todas** as janelas de 1 s da cena estável (5 vezes
+  mais amostras que as linhas de 5 s).
+- **A/B na rodada** (só com `SPARK_AB`): ver abaixo.
 - **Pipelines recusadas** e **Instruções não traduzidas**: top 10 com
   contagem (por lista de shaders / por instrução, com nº de shaders).
 - **Dispositivo perdido / TDR**, **Falha** (código, módulo+offset, pilha).
@@ -90,6 +101,57 @@ Não há eventos por draw; por quadro há só uma soma em memória.
   falhas de página ou pouca RAM) → engasgos → VRAM no limite → placa vs.
   CPU (GPU > preparação: "placa é o limite"; senão o maior pedaço da
   preparação).
+
+## A/B dentro da execução (`SPARK_AB`)
+
+Duas execuções do mesmo build diferem mais do que a maioria das mudanças vale
+(cena, memória livre, estado da placa). Com `SPARK_AB` uma execução só mede a
+opção dos dois jeitos, em blocos alternados da mesma cena:
+
+- `SPARK_AB=VICTORY_X` alterna `VICTORY_X` entre `0` (braço A) e `1` (braço
+  B) em blocos de 20 s; `SPARK_AB=VICTORY_X=80/94:30` alterna entre 80 e 94 em
+  blocos de 30 s; `+` junta chaves que mudam juntas. `VICTORY_X=alt` é o mesmo
+  que `SPARK_AB=VICTORY_X`.
+- A troca acontece na apresentação de um quadro. Os blocos seguem a sequência
+  de Thue–Morse (A B B A B A A B…), para que uma deriva lenta da cena caia nos
+  dois braços, e o primeiro décimo de cada bloco depois de uma troca (mín. 1 s)
+  fica fora das contas. Só contam quadros da cena estável.
+- Só alternam as chaves que decidem a cada uso, sem estado do valor antigo:
+  `VICTORY_CARD_SYNC_BATCH`, `VICTORY_COPY_PLAIN`, `VICTORY_MERGE_MASK`,
+  `VICTORY_SKIP_WC_BACK` (mede tempo, não imagem: o que ficou sem voltar num
+  braço continua assim no outro), `VICTORY_STEP_INDEX`,
+  `VICTORY_TEXTURE_ROOM_PERCENT` e `VICTORY_WIDE_MERGE`. Outra chave em
+  `SPARK_AB` recusa a execução na hora, com a lista das que podem; e também uma chave que ficaria sem efeito pela
+  configuração (ex.: `VICTORY_MERGE_MASK` com o bit 2 de `VICTORY_QUEUE2`), pois a execução não mediria nada.
+- As capturas (`VICTORY_CAPTURE`) levam o braço no nome (`frame-N-a.png`, `frame-N-b.png`), para comparar a
+  imagem braço a braço.
+- O resumo ganha a seção **A/B na rodada**: por braço, quadros, p50/p95/p99,
+  média, quadros > 1 s e as medianas das partes do quadro das janelas de 1 s
+  inteiras num braço; e o veredito pela diferença pareada das medianas de
+  blocos vizinhos (um de cada braço), com intervalo de confiança de 95 %
+  (t de Student). `resumo.json` traz o mesmo em `ab`, mais os números de cada bloco (`block_stats`: índice, braço,
+  quadros, p50, p95, média, quadros > 1 s), que é o que `scripts/ab_estat.py` e `scripts/veredito.py` analisam
+  (escala log, tendência linear, parada sequencial).
+
+### Vários experimentos numa execução (`SPARK_PLAN`)
+
+A partida do título (menus, carregamento, cena estável) custa minutos; um plano a paga uma vez para vários A/B:
+
+```toml
+periodo_s = 20
+[[experimento]]
+nome = "merge"
+ab = "VICTORY_WIDE_MERGE"
+[[experimento]]
+nome = "aa"
+ab = "VICTORY_STEP_INDEX=0/0"
+```
+
+O experimento em vigor é o número escrito em `<plano.toml>.atual` (0 se o arquivo não existe), lido a cada segundo:
+quem acompanha a execução (`scripts/amostras.py`, usado por `scripts/autopilot.py rodar`) escreve o seguinte quando
+o atual decide. Cada experimento novo começa com um bloco de lavagem no braço A, fora das contas. O resumo traz um
+`ab` por experimento em `ab_experiments` e uma seção "A/B na rodada" para cada um; `scripts/veredito.py <pasta>
+--exp N` julga o experimento N.
 
 ## Fluxo recomendado com uma IA
 

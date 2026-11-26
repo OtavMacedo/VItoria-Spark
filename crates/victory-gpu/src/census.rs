@@ -48,7 +48,10 @@ static RESERVATIONS: Mutex<BTreeMap<usize, Reservation>> = Mutex::new(BTreeMap::
 /// at an address of its choice), with the title's own `kind`, XMem `flags`
 /// and console `protect` (before the runtime cleans them).
 pub fn title_memory_reserved(at: usize, len: usize, kind: u32, flags: u64, protect: u32) {
-    if !(on() || skip_wc_back()) || at == 0 || len == 0 {
+    // Kept whenever the skip is on at some time of the run: the arm that
+    // skips needs the reservations made under the other.
+    let wanted = on() || skip_wc_compare() || crate::switches::SKIP_WC_BACK.ever();
+    if !wanted || at == 0 || len == 0 {
         return;
     }
     RESERVATIONS
@@ -71,15 +74,17 @@ pub fn title_memory_reserved(at: usize, len: usize, kind: u32, flags: u64, prote
 /// that memory at all (the census found 97 of 100 MB a frame fetched back
 /// from it). Expect artifacts where the title's CPU writes part of a
 /// 64 KiB piece the card wrote: the next upload sends the stale bytes there.
+/// It may alternate inside a run (`SPARK_AB`), to measure time only.
 pub(crate) fn skip_wc_back() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        let on = skip_wc_compare() || std::env::var_os("VICTORY_SKIP_WC_BACK").is_some_and(|v| v == "1");
+    static EVER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ever = *EVER.get_or_init(|| {
+        let on = skip_wc_compare() || crate::switches::SKIP_WC_BACK.ever();
         if on {
             tracing::warn!("VICTORY_SKIP_WC_BACK=1: shader writes to write-combining title memory are NOT copied back (experiment)");
         }
         on
-    })
+    });
+    ever && (skip_wc_compare() || crate::switches::SKIP_WC_BACK.on())
 }
 
 /// `VICTORY_SKIP_WC_COMPARE=1`, the second half of the same EXPERIMENT

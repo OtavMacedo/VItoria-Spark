@@ -76,9 +76,8 @@ pub(crate) fn set_ready() {
 }
 
 /// The switch: `VICTORY_MERGE_MASK` unset or `0` off; `1` on with
-/// [`DEFAULT_THRESHOLD`]; a number from 2 up on with that threshold;
-/// `alt`: twenty seconds on, twenty off, in turn, each change said in the
-/// log, so that one run measures both in the same scene.
+/// [`DEFAULT_THRESHOLD`]; a number from 2 up on with that threshold. It
+/// may alternate inside a run (`SPARK_AB`, [`crate::switches`]).
 fn switch() -> Option<usize> {
     #[cfg(test)]
     match FOR_TEST.load(Ordering::Relaxed) {
@@ -86,47 +85,9 @@ fn switch() -> Option<usize> {
         0 => return None,
         n => return Some(n),
     }
-    /// 0 off, `usize::MAX` in turn, else the threshold.
-    static MODE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let mode = *MODE.get_or_init(|| {
-        match std::env::var("VICTORY_MERGE_MASK")
-            .as_deref()
-            .map(str::trim)
-        {
-            Ok("alt") => usize::MAX,
-            Ok(v) => match v.parse::<usize>() {
-                Ok(0) | Err(_) => 0,
-                Ok(1) => DEFAULT_THRESHOLD,
-                Ok(n) => n,
-            },
-            Err(_) => 0,
-        }
-    });
-    match mode {
+    match crate::switches::MERGE_MASK.get() {
         0 => None,
-        usize::MAX => {
-            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
-            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
-            if LAST.swap(u8::from(on), Ordering::Relaxed) != u8::from(on) {
-                tracing::info!(
-                    "pages with many changed runs go up to the card with a mask from now (VICTORY_MERGE_MASK=alt): {}",
-                    if on {
-                        "ON"
-                    } else {
-                        "off, a copy a run as before"
-                    }
-                );
-            }
-            on.then_some(DEFAULT_THRESHOLD)
-        }
-        n => Some(n),
+        n => Some(n as usize),
     }
 }
 

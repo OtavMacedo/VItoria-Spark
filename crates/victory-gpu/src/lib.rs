@@ -86,6 +86,8 @@ pub mod signature;
 mod spread;
 #[cfg(windows)]
 mod stats;
+/// The switches that may alternate inside a run.
+pub mod switches;
 #[cfg(windows)]
 mod texback;
 #[cfg(windows)]

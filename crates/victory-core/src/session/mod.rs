@@ -22,6 +22,7 @@
 //! summary reads (`frame_rate`, `pipeline_refused`, `shader_untranslated`,
 //! `device_lost`, `video_memory`, `adapter`).
 
+mod ab;
 pub mod anon;
 mod json;
 pub mod summary;
@@ -49,6 +50,8 @@ pub const RATE_WINDOW: Duration = Duration::from_secs(10);
 const QUEUE: usize = 8192;
 /// How often the summary is rewritten during the run.
 const SUMMARY_EVERY: Duration = Duration::from_secs(60);
+/// The same with switches alternating (`crate::ab`).
+const SUMMARY_EVERY_AB: Duration = Duration::from_secs(15);
 
 /// What the front end knows of its build.
 pub struct BuildInfo {
@@ -166,7 +169,22 @@ fn start_in(base: &Path, build: BuildInfo, game_dir: Option<&Path>) -> Option<Pa
         started_ms,
         tx: OnceLock::new(),
         stopped: AtomicBool::new(false),
-        summary: Mutex::new(Summary::new()),
+        summary: Mutex::new({
+            let mut summary = Summary::new();
+            let env_num = |name: &str| {
+                std::env::var(name)
+                    .ok()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+            };
+            summary.stable_rule(
+                env_num("SPARK_STABLE_DRAWS").unwrap_or(summary::STABLE_DRAWS),
+                env_num("SPARK_STABLE_AFTER_S").unwrap_or(summary::STABLE_AFTER_S),
+            );
+            for (name, plan) in crate::ab::program().map_or(&[][..], |p| &p.experiments[..]) {
+                summary.ab_plan(name, [plan.label(0), plan.label(1)], plan.period_s);
+            }
+            summary
+        }),
         anon,
         json_level: json_level.filter(|_| file.is_some()),
         meta_json,
@@ -542,7 +560,14 @@ fn writer(rx: Receiver<Msg>, mut file: Option<std::io::BufWriter<std::fs::File>>
                 );
             }
         }
-        if summarised.elapsed() >= SUMMARY_EVERY {
+        // A run with experiments is watched by a script that stops it, or
+        // moves to the next experiment, on the summary's numbers.
+        let every = if crate::ab::program().is_some() {
+            SUMMARY_EVERY_AB
+        } else {
+            SUMMARY_EVERY
+        };
+        if summarised.elapsed() >= every {
             summarised = Instant::now();
             s.write_summary(Duration::from_secs(1));
         }
@@ -552,13 +577,31 @@ fn writer(rx: Receiver<Msg>, mut file: Option<std::io::BufWriter<std::fs::File>>
 /// A frame was presented; `submissions` is the run's total of host
 /// submissions so far (a frame with six or more is one of the world).
 /// One short lock a frame.
+///
+/// This is also where a run's alternating switches change arm
+/// (`crate::ab`), with or without a session.
 pub fn frame_presented(submissions: u64) {
+    let tag = crate::ab::frame_presented();
     if let Some(s) = active() {
         let now = s.now_s();
         s.summary
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .present(now, submissions);
+            .present_tagged(now, submissions, tag);
+    }
+}
+
+/// The frame meter's numbers for the frames presented since its last call
+/// (about a second of them, every second): they mark the stable scene and
+/// give its frame parts, and each arm's in a run whose switches alternate.
+/// One short lock a second.
+pub fn frame_window(rate: summary::Rate) {
+    if let Some(s) = active() {
+        let now = s.now_s();
+        s.summary
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .window(now, rate);
     }
 }
 

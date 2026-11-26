@@ -55,11 +55,11 @@ unsafe extern "C" {
 }
 
 /// Whether copies of title memory into host memory are made in place
-/// (`VICTORY_COPY_PLAIN=1`).
+/// (`VICTORY_COPY_PLAIN=1`; it may alternate inside a run, `SPARK_AB`).
 pub(crate) fn on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        let on = cfg!(target_arch = "x86_64") && std::env::var_os("VICTORY_COPY_PLAIN").is_some_and(|v| v == "1");
+    static EVER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ever = *EVER.get_or_init(|| {
+        let on = cfg!(target_arch = "x86_64") && crate::switches::COPY_PLAIN.ever();
         if on {
             install();
             tracing::info!(
@@ -68,7 +68,8 @@ pub(crate) fn on() -> bool {
             );
         }
         on
-    })
+    });
+    ever && crate::switches::COPY_PLAIN.on()
 }
 
 /// Copies made in place, their bytes, the copies that met a page that was

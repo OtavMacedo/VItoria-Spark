@@ -7,6 +7,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+use crate::ab::Tag;
+
+use super::ab::AbStats;
 use super::json::{self, Obj};
 
 /// Host submissions between two presents from which a frame is one of the
@@ -23,6 +26,14 @@ const MAX_KEYS: usize = 512;
 const MAX_SAMPLES: usize = 17_280;
 /// Rows in each top list.
 const TOP: usize = 10;
+/// Draws a frame from which the scene is the stable one measured (the
+/// world drawn whole, not a loading or half-loaded scene), unless
+/// `SPARK_STABLE_DRAWS` says another.
+pub const STABLE_DRAWS: f64 = 4500.0;
+/// Seconds after the world's first frame before the scene counts as
+/// stable (streaming catches up), unless `SPARK_STABLE_AFTER_S` says
+/// another.
+pub const STABLE_AFTER_S: f64 = 60.0;
 
 /// The level of an event, most severe first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -309,6 +320,23 @@ pub struct Summary {
     pub suppressed_events: u64,
     end: Option<String>,
     now_s: f64,
+    /// Per experiment of a run whose switches alternate (`SPARK_AB`, one;
+    /// `SPARK_PLAN`, several): its name and its two arms.
+    ab: Vec<(String, AbStats)>,
+    /// The experiment of the last frame tagged: the meter's next window is
+    /// its.
+    ab_last: usize,
+    /// What makes the scene the stable one: draws a frame and seconds
+    /// after the world's start (`None`: [`STABLE_DRAWS`], [`STABLE_AFTER_S`]).
+    stable_rule: Option<(f64, f64)>,
+    /// When the scene became stable: the first one-second window of the
+    /// meter that met the rule.
+    stable_from_s: Option<f64>,
+    /// World frames presented since the scene became stable.
+    stable: Histogram,
+    /// The meter's one-second windows of the stable scene that met the
+    /// rule's draws.
+    stable_windows: Vec<Rate>,
 }
 
 /// What a message says with its numbers taken out, so that one warning
@@ -391,6 +419,24 @@ fn fmt_s(s: f64) -> String {
     }
 }
 
+/// The medians of `rates`; `world` says whether they are the world's.
+fn medians_of(world: bool, rates: &[&Rate]) -> Medians {
+    let m = |f: fn(&Rate) -> f64| median(rates.iter().map(|r| f(r)).collect());
+    Medians {
+        world,
+        samples: rates.len(),
+        fps: m(|r| r.fps),
+        ms: m(|r| r.ms),
+        preparing: m(|r| r.preparing),
+        copies: m(|r| r.copies),
+        textures: m(|r| r.textures),
+        gpu: m(|r| r.gpu),
+        copy_back: m(|r| r.copy_back),
+        draws: m(|r| r.draws),
+        dropped: m(|r| r.dropped),
+    }
+}
+
 /// Medians of the frame-rate samples of the world (all of them if none is).
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Medians {
@@ -424,6 +470,12 @@ impl Summary {
     /// A frame was presented; `submissions` is the run's total of host
     /// submissions so far.
     pub fn present(&mut self, now_s: f64, submissions: u64) {
+        self.present_tagged(now_s, submissions, None);
+    }
+
+    /// [`Summary::present`] for a run whose switches alternate: `tag` is
+    /// what the frame that ended ran under (`crate::ab`).
+    pub fn present_tagged(&mut self, now_s: f64, submissions: u64, tag: Option<Tag>) {
         self.tick(now_s);
         let Some((then, before)) = self.last_present.replace((now_s, submissions)) else {
             return;
@@ -431,6 +483,60 @@ impl Summary {
         let ms = (now_s - then) * 1000.0;
         let world = submissions.saturating_sub(before) >= WORLD_SUBMISSIONS;
         self.frame(then, ms, world);
+        let stable = world && self.stable_from_s.is_some();
+        if stable {
+            self.stable.add(ms);
+        }
+        if let Some(tag) = tag {
+            self.ab_last = tag.exp;
+            if let Some((_, ab)) = self.ab.get_mut(tag.exp) {
+                ab.frame(tag, ms, stable);
+            }
+        }
+    }
+
+    /// The run alternates switches: what each arm sets (`NAME=value ...`)
+    /// and a block's length in seconds. Before the first frame.
+    pub fn ab_plan(&mut self, name: &str, labels: [String; 2], period_s: f64) {
+        self.ab
+            .push((name.to_owned(), AbStats::new(labels, period_s)));
+    }
+
+    /// What makes the scene stable: `draws` a frame or more, from
+    /// `after_s` seconds after the world's first frame on. Before the
+    /// first frame.
+    pub fn stable_rule(&mut self, draws: f64, after_s: f64) {
+        self.stable_rule = Some((draws.max(0.0), after_s.max(0.0)));
+    }
+
+    fn rule(&self) -> (f64, f64) {
+        self.stable_rule.unwrap_or((STABLE_DRAWS, STABLE_AFTER_S))
+    }
+
+    /// The frame meter's numbers for the frames presented since its last
+    /// call (about a second of them), at `now_s`: they mark when the scene
+    /// becomes stable, and the stable scene's and the arms' frame parts
+    /// come from them.
+    pub fn window(&mut self, now_s: f64, rate: Rate) {
+        self.tick(now_s);
+        let (draws, after_s) = self.rule();
+        if self.stable_from_s.is_none()
+            && rate.draws >= draws
+            && self
+                .first_world_s
+                .is_some_and(|world_s| now_s - world_s >= after_s)
+        {
+            self.stable_from_s = Some(now_s);
+        }
+        if self.stable_from_s.is_some()
+            && rate.draws >= draws
+            && self.stable_windows.len() < MAX_SAMPLES
+        {
+            self.stable_windows.push(rate);
+        }
+        if let Some((_, ab)) = self.ab.get_mut(self.ab_last) {
+            ab.window(rate);
+        }
     }
 
     /// One frame of `ms` that started at `start_s`.
@@ -602,20 +708,13 @@ impl Summary {
         } else {
             (true, world)
         };
-        let m = |f: fn(&Rate) -> f64| median(rates.iter().map(|r| f(r)).collect());
-        Medians {
-            world: is_world,
-            samples: rates.len(),
-            fps: m(|r| r.fps),
-            ms: m(|r| r.ms),
-            preparing: m(|r| r.preparing),
-            copies: m(|r| r.copies),
-            textures: m(|r| r.textures),
-            gpu: m(|r| r.gpu),
-            copy_back: m(|r| r.copy_back),
-            draws: m(|r| r.draws),
-            dropped: m(|r| r.dropped),
-        }
+        medians_of(is_world, &rates)
+    }
+
+    /// Medians of the stable scene's one-second windows (none before it).
+    pub fn stable_medians(&self) -> Medians {
+        let rates: Vec<&Rate> = self.stable_windows.iter().collect();
+        medians_of(true, &rates)
     }
 
     /// Where to look next, most pressing first (at most four).
@@ -751,19 +850,29 @@ impl Summary {
                 )
                 .finish()
         };
-        let m = self.medians();
-        let medians = Obj::new()
-            .bool("world", m.world)
-            .int("samples", m.samples as u64)
-            .opt_num("fps", m.fps)
-            .opt_num("ms", m.ms)
-            .opt_num("preparing_ms", m.preparing)
-            .opt_num("copies_ms", m.copies)
-            .opt_num("textures_ms", m.textures)
-            .opt_num("gpu_ms", m.gpu)
-            .opt_num("copy_back_ms", m.copy_back)
-            .opt_num("draws", m.draws)
-            .opt_num("dropped", m.dropped)
+        let medians_json = |m: Medians| {
+            Obj::new()
+                .bool("world", m.world)
+                .int("samples", m.samples as u64)
+                .opt_num("fps", m.fps)
+                .opt_num("ms", m.ms)
+                .opt_num("preparing_ms", m.preparing)
+                .opt_num("copies_ms", m.copies)
+                .opt_num("textures_ms", m.textures)
+                .opt_num("gpu_ms", m.gpu)
+                .opt_num("copy_back_ms", m.copy_back)
+                .opt_num("draws", m.draws)
+                .opt_num("dropped", m.dropped)
+                .finish()
+        };
+        let medians = medians_json(self.medians());
+        let (stable_draws, stable_after_s) = self.rule();
+        let stable = Obj::new()
+            .num("draws_at_least", stable_draws)
+            .num("after_world_s", stable_after_s)
+            .opt_num("from_s", self.stable_from_s)
+            .raw("frames", &pct(&self.stable))
+            .raw("window_medians", &medians_json(self.stable_medians()))
             .finish();
         let tally = |t: &Tally, others: bool| {
             json::array(t.top(TOP).into_iter().map(|(k, r)| {
@@ -829,6 +938,23 @@ impl Summary {
             .int("long_frames_over_1s", self.long_frames)
             .int("long_world_frames_over_1s", self.long_world_frames)
             .raw("frame_rate_medians", &medians)
+            .raw("stable_scene", &stable)
+            .raw(
+                "ab",
+                &self
+                    .ab
+                    .first()
+                    .map_or("null".into(), |(_, ab)| ab.to_json()),
+            )
+            .raw(
+                "ab_experiments",
+                &json::array(self.ab.iter().map(|(name, ab)| {
+                    Obj::new()
+                        .str("name", name)
+                        .raw("ab", &ab.to_json())
+                        .finish()
+                })),
+            )
             .num("pipelines_being_made_max", self.pipelines_making_max)
             .raw("adapter", &adapter.finish())
             .raw("refused_pipelines", &tally(&self.refused, false))
@@ -923,7 +1049,11 @@ impl Summary {
             "| quadros | n | p50 ms | p95 ms | p99 ms | máx ms | fps (p50) |"
         );
         let _ = writeln!(s, "|---|---|---|---|---|---|---|");
-        for (name, h) in [("mundo", &self.world), ("todos", &self.frames)] {
+        for (name, h) in [
+            ("cena estável", &self.stable),
+            ("mundo", &self.world),
+            ("todos", &self.frames),
+        ] {
             let p50 = h.percentile(0.5);
             let _ = writeln!(
                 s,
@@ -942,6 +1072,16 @@ impl Summary {
             "\nQuadros de mais de 1 s: {} (no mundo: {}).",
             self.long_frames, self.long_world_frames
         );
+        let (stable_draws, stable_after_s) = self.rule();
+        let _ = writeln!(
+            s,
+            "\nCena estável ({stable_draws:.0}+ draws por quadro, {stable_after_s:.0} s depois do 1º quadro do mundo): {}.",
+            self.stable_from_s.map_or(
+                "não alcançada (SPARK_STABLE_DRAWS e SPARK_STABLE_AFTER_S mudam a regra)"
+                    .to_owned(),
+                |t| format!("desde {} após o início", fmt_s(t))
+            )
+        );
 
         let m = self.medians();
         let _ = writeln!(
@@ -952,28 +1092,50 @@ impl Summary {
         );
         let _ = writeln!(
             s,
-            "| fps | ms/quadro | preparando | cópias | texturas | GPU | cópia de volta | draws | descartados |"
+            "| amostras | fps | ms/quadro | preparando | cópias | texturas | GPU | cópia de volta | draws | descartados |"
         );
-        let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|");
-        let _ = writeln!(
-            s,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-            fmt_ms(m.fps),
-            fmt_ms(m.ms),
-            fmt_ms(m.preparing),
-            fmt_ms(m.copies),
-            fmt_ms(m.textures),
-            fmt_ms(m.gpu),
-            fmt_ms(m.copy_back),
-            m.draws.map_or("—".into(), |v| format!("{v:.0}")),
-            m.dropped.map_or("—".into(), |v| format!("{v:.0}"))
-        );
+        let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|---|");
+        let stable = self.stable_medians();
+        let rows = [
+            (format!("{} linhas de 5 s", m.samples), m),
+            (
+                format!("{} janelas de 1 s da cena estável", stable.samples),
+                stable,
+            ),
+        ];
+        for (name, m) in rows.iter().filter(|(_, m)| m.samples > 0) {
+            let _ = writeln!(
+                s,
+                "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                fmt_ms(m.fps),
+                fmt_ms(m.ms),
+                fmt_ms(m.preparing),
+                fmt_ms(m.copies),
+                fmt_ms(m.textures),
+                fmt_ms(m.gpu),
+                fmt_ms(m.copy_back),
+                m.draws.map_or("—".into(), |v| format!("{v:.0}")),
+                m.dropped.map_or("—".into(), |v| format!("{v:.0}"))
+            );
+        }
         if self.pipelines_making_max > 0.0 {
             let _ = writeln!(
                 s,
                 "\nPipelines sendo feitas ao mesmo tempo: até {:.0}.",
                 self.pipelines_making_max
             );
+        }
+        for (i, (name, ab)) in self.ab.iter().enumerate() {
+            let md = ab.to_markdown();
+            if self.ab.len() > 1 {
+                s.push_str(&md.replacen(
+                    "## A/B na rodada (SPARK_AB)",
+                    &format!("## A/B na rodada: experimento {i} ({name})"),
+                    1,
+                ));
+            } else {
+                s.push_str(&md);
+            }
         }
 
         if self.refused.total() > 0 {
@@ -1288,6 +1450,58 @@ mod tests {
         assert!(m.world);
         assert_eq!(m.samples, 1);
         assert_eq!(m.preparing, Some(30.0));
+    }
+
+    #[test]
+    fn the_stable_scene_waits_for_draws_and_time() {
+        let mut s = Summary::new();
+        s.stable_rule(4000.0, 10.0);
+        let window = |draws: f64, preparing: f64| Rate {
+            draws,
+            preparing,
+            ..Rate::default()
+        };
+        // The world from 0 s: 12 submissions a frame, a frame of 100 ms;
+        // each second a window, with few draws before 15 s and many after.
+        let mut subs = 0;
+        for i in 0..300u32 {
+            let t = f64::from(i) * 0.1;
+            subs += 12;
+            s.present(t, subs);
+            if i % 10 == 0 {
+                let (draws, preparing) = if i < 150 {
+                    (2000.0, 90.0)
+                } else {
+                    (5000.0, 40.0)
+                };
+                s.window(t, window(draws, preparing));
+            }
+        }
+        // Many draws came at 15 s, past the 10 s after the world's start.
+        let from = s.stable_from_s.unwrap();
+        assert!((14.9..15.2).contains(&from), "{from}");
+        assert!(s.stable.count() > 100 && s.stable.count() < s.world.count());
+        let m = s.stable_medians();
+        assert_eq!(m.preparing, Some(40.0));
+        assert!(m.samples >= 14, "{}", m.samples);
+        let md = s.to_markdown(&[]);
+        assert!(md.contains("| cena estável |"), "{md}");
+        assert!(md.contains("janelas de 1 s da cena estável"), "{md}");
+        assert!(s.to_json("{}").contains(r#""stable_scene":{"#));
+
+        // Many draws too early do not count.
+        let mut early = Summary::new();
+        early.stable_rule(4000.0, 60.0);
+        let mut subs = 0;
+        for i in 0..300 {
+            subs += 12;
+            let t = f64::from(i) * 0.1;
+            early.present(t, subs);
+            early.window(t, window(5000.0, 40.0));
+        }
+        assert_eq!(early.stable_from_s, None);
+        assert_eq!(early.stable.count(), 0);
+        assert!(early.to_markdown(&[]).contains("não alcançada"));
     }
 
     #[test]

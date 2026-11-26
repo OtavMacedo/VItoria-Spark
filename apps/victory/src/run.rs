@@ -14,6 +14,8 @@ pub fn run(
 ) -> Result<()> {
     // The card maker's settings (perfis/), before anything reads a setting.
     let profile = victory_gpu::vendor::apply();
+    // A run asked to alternate a switch that cannot would measure nothing.
+    victory_gpu::switches::check_ab().map_err(anyhow::Error::msg)?;
     // The session log (logs/<time>-<pid>/): eventos.jsonl and the summary.
     victory_core::session::start(
         victory_core::session::BuildInfo {

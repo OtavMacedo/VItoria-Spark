@@ -203,9 +203,15 @@ pub(crate) fn wanted(n: u64) -> bool {
     folder().is_some() && (n.is_power_of_two() || listed(n) || before_world || in_world)
 }
 
-/// Saves 8-bit RGBA or BGRA rows (`pitch` bytes apart) as frame `n`.
+/// Saves 8-bit RGBA or BGRA rows (`pitch` bytes apart) as frame `n`; in a
+/// run whose switches alternate (`SPARK_AB`) the name ends in the arm in
+/// force, `-a` or `-b`, so that pictures are compared arm by arm.
 pub(crate) fn save(n: u64, width: u32, height: u32, pitch: usize, bgra: bool, rows: &[u8]) {
-    save_as(&format!("frame-{n}"), width, height, pitch, bgra, rows);
+    let name = match victory_core::ab::arm() {
+        Some(arm) => format!("frame-{n}-{}", ["a", "b"][usize::from(arm)]),
+        None => format!("frame-{n}"),
+    };
+    save_as(&name, width, height, pitch, bgra, rows);
 }
 
 /// Saves 8-bit RGBA or BGRA rows as `<name>.png`, at half size.

@@ -2916,10 +2916,10 @@ static CARD_PASSES: [std::sync::atomic::AtomicU64; 3] =
 /// settles: about 630 pieces and 40 MB a frame (run 104), each compared
 /// with the copy's CPU side byte by byte and put into title memory through
 /// the kernel. A piece is its own bytes of its copy and of title memory,
-/// so eight threads take an eighth of them each.
+/// so eight threads take an eighth of them each. It may alternate inside a
+/// run (`SPARK_AB`): each fetch decides on its own.
 fn wide_merge() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_WIDE_MERGE").is_some_and(|v| v == "1"))
+    crate::switches::WIDE_MERGE.on()
 }
 
 /// One declared range of a copy in the card's memory, in a submission.
@@ -3763,44 +3763,12 @@ mod fill_check;
 
 /// Whether a submission's passes over its lists' steps find a step's copy
 /// by an index instead of a search (`VICTORY_STEP_INDEX=1`; off by default;
-/// `alt`: twenty seconds with, twenty without, in turn, each change said in
-/// the log). The same copies, ranges and order come out
-/// ([`declared_by_index`], [`stale_under_flights`]); what goes is a lock
-/// and a search of a list per refresh step and a search of two lists per
-/// range given to shaders.
+/// it may alternate inside a run, `SPARK_AB`). The same copies, ranges and
+/// order come out ([`declared_by_index`], [`stale_under_flights`]); what
+/// goes is a lock and a search of a list per refresh step and a search of
+/// two lists per range given to shaders.
 fn step_index() -> bool {
-    /// 0 off, 1 on, 2 in turn.
-    static MODE: OnceLock<u8> = OnceLock::new();
-    match *MODE.get_or_init(|| match std::env::var("VICTORY_STEP_INDEX").as_deref() {
-        Ok("1") => 1,
-        Ok("alt") => 2,
-        _ => 0,
-    }) {
-        0 => false,
-        1 => true,
-        _ => {
-            static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
-            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
-            if LAST.swap(u8::from(on), Ordering::Relaxed) != u8::from(on) {
-                tracing::info!(
-                    "a submission's steps find their copy by an index from now (VICTORY_STEP_INDEX=alt): {}",
-                    if on {
-                        "ON"
-                    } else {
-                        "off, by a search as usual"
-                    }
-                );
-            }
-            on
-        }
-    }
+    crate::switches::STEP_INDEX.on()
 }
 
 /// The ranges (from, to) given to shaders, as `given` names them in order,
@@ -3952,8 +3920,7 @@ fn stale_under_flights(runs: &[&HostList]) -> bool {
 /// range copied up, then every state change in one call, then every hash
 /// pass (`VICTORY_CARD_SYNC_BATCH=1`; fork pull request #1227, where it is
 /// on by default. Here: OFF unless set until a run of ours has carried it;
-/// `alt`: twenty seconds with, twenty without, in turn, each change said in
-/// the log).
+/// it may alternate inside a run, `SPARK_AB`).
 ///
 /// Copy by copy, each with its copies, its state change and its hash
 /// passes, the card went from copying to compute and back for every copy
@@ -3964,40 +3931,7 @@ fn stale_under_flights(runs: &[&HostList]) -> bool {
 /// Nothing a hash pass reads is written by a later copy of the list: each
 /// copy's ranges and pieces are its own buffer's.
 fn sync_batched() -> bool {
-    /// 0 off, 1 on, 2 in turn.
-    static MODE: OnceLock<u8> = OnceLock::new();
-    match *MODE.get_or_init(
-        || match std::env::var("VICTORY_CARD_SYNC_BATCH").as_deref() {
-            Ok("1") => 1,
-            Ok("alt") => 2,
-            _ => 0,
-        },
-    ) {
-        0 => false,
-        1 => true,
-        _ => {
-            static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
-            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
-            if LAST.swap(u8::from(on), Ordering::Relaxed) != u8::from(on) {
-                tracing::info!(
-                    "the send-and-hash list records its copies, one state change and its hash passes in three steps from now (VICTORY_CARD_SYNC_BATCH=alt): {}",
-                    if on {
-                        "ON"
-                    } else {
-                        "off, copy by copy as usual"
-                    }
-                );
-            }
-            on
-        }
-    }
+    crate::switches::CARD_SYNC_BATCH.on()
 }
 
 /// A fence signal on a queue ([`late`]): goes behind the flights in the
