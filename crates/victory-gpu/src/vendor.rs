@@ -78,6 +78,11 @@ pub fn detect() -> Option<(Maker, String)> {
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory4,
     };
+    // Under Wine a DXGI factory made before anything has touched the window system never
+    // returns (its Vulkan instance waits on a display driver nobody started); asking for the
+    // desktop window starts it, and costs nothing on Windows.
+    // SAFETY: no arguments; the handle is not used.
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() };
     // SAFETY: plain DXGI queries on objects this function owns.
     let desc = unsafe {
         let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
