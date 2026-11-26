@@ -211,6 +211,14 @@ cmd_preparar() {
                 "o mesmo (ou SPARK_PROTON=<pasta do Proton>)" \
                 "o mesmo, ou o pacote dxvk-bin do AUR"
         fi
+        if eh_nativa "$(SYS32)/d3dcompiler_47.dll"; then
+            ok "d3dcompiler_47 da Microsoft no prefixo"
+        else
+            falta "d3dcompiler_47.dll da Microsoft no prefixo (o do Wine não compila os shaders HLSL do Spark: somem a execução indireta e as cópias na placa)" \
+                "sudo apt install winetricks; WINEPREFIX=\"$WINEPREFIX\" winetricks d3dcompiler_47" \
+                "sudo dnf install winetricks; WINEPREFIX=\"$WINEPREFIX\" winetricks d3dcompiler_47" \
+                "sudo pacman -S winetricks; WINEPREFIX=\"$WINEPREFIX\" winetricks d3dcompiler_47"
+        fi
     fi
 
     echo "== Sistema"
@@ -311,11 +319,13 @@ ambiente() {
         [[ $par == *=* ]] || erro "esperava VAR=valor: $par"
         export "${par%%=*}=${par#*=}"
     done
-    local nossos="d3d12,d3d12core,dxgi=n,b;winemenubuilder.exe=d"
+    local nossos="d3d12,d3d12core,dxgi,d3dcompiler_47=n,b;winemenubuilder.exe=d"
     export WINEDLLOVERRIDES="$nossos${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
     export WINEDEBUG=${WINEDEBUG:--all}
     # O DXVK grava o log do dxgi na pasta atual por padrão.
     export DXVK_LOG_LEVEL=${DXVK_LOG_LEVEL:-none}
+    # O DXVK diz ao DXGI que uma placa NVIDIA é AMD; sem a verdade, o Spark aplica o perfil de outro fabricante.
+    export DXVK_CONFIG="dxgi.hideNvidiaGpu = False${DXVK_CONFIG:+; $DXVK_CONFIG}"
     # O vkd3d-proton grava o cache de pipelines na pasta atual por padrão.
     mkdir -p "$CACHE/vkd3d"
     export VKD3D_SHADER_CACHE_PATH=${VKD3D_SHADER_CACHE_PATH:-$CACHE/vkd3d}

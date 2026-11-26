@@ -16,6 +16,9 @@ dos seus outros prefixos.
 - Wine 10 ou mais novo (o relato da comunidade é com Wine 11), ou um Proton (por exemplo GE-Proton) apontado em `SPARK_PROTON`.
 - vkd3d-proton 3.x ou mais novo e o `dxgi.dll` do [DXVK](https://github.com/doitsujin/dxvk), que o vkd3d-proton
   usa para a swapchain. Um Proton já traz os dois. O DXVK-NVAPI não é necessário.
+- O `d3dcompiler_47.dll` da Microsoft no prefixo (`winetricks d3dcompiler_47`). O do Wine e o do Proton não compilam
+  os shaders HLSL do Spark; sem o da Microsoft, a execução indireta é descartada, as comparações de cópias na placa
+  ficam desligadas e os planos de profundidade não são copiados. O `preparar` confere e o `rodar` o ativa como nativo.
 - Para compilar no Linux: rustup, [cargo-xwin](https://github.com/rust-cross/cargo-xwin), clang, lld e llvm. Também
   dá para usar um `victory.exe` compilado no Windows (`VICTORY_EXE=<caminho>`).
 
@@ -41,6 +44,9 @@ scripts/linux/spark.sh rodar <pasta-ou-exe-do-título> [VAR=valor ...]
   `~/.local/state/vitoria-spark/execucoes/<data>` (`SPARK_LOG_DIR`). Converte os caminhos com `winepath -w` e
   chama `victory.exe run <título> --execute`. Os saves e o cache do Spark ficam dentro do prefixo
   (`%LOCALAPPDATA%\victory`), a menos que `victory.toml` diga outra coisa.
+- **Perfil de placa:** por padrão o DXVK diz ao DXGI que uma placa NVIDIA é AMD. O `rodar` exporta
+  `DXVK_CONFIG="dxgi.hideNvidiaGpu = False"` (somado ao seu `DXVK_CONFIG`, se houver) para o Spark aplicar o perfil
+  do fabricante certo. Quem roda o `victory.exe` por conta própria deve exportar o mesmo.
 
 `scripts/linux/spark.sh diagnostico` imprime kernel, distro, CPU, RAM, GPU, driver, Vulkan, Wine e vkd3d-proton,
 com a pasta pessoal trocada por `<HOME>`, para colar numa issue.
