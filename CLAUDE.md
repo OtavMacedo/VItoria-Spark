@@ -65,6 +65,9 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
 - Nunca baixe, procure ou indique arquivos de jogo, chaves, firmware ou SDKs. Nunca escreva código que quebre
   criptografia ou proteção de cópia. Se encontrar algo assim no caminho, pare e avise a pessoa.
 - Sem ganho medido, não há PR: registre o resultado na issue e escolha outro alvo.
+- README ("Onde estamos" e "Desempenho medido") só muda com avanço **muito relevante**: +10% de fps ou −50% de
+  quadros > 1 s confirmados em 2+ execuções de cada lado, um item de "Ainda não" resolvido, ou a primeira medição de
+  uma placa nova ([docs/autopilot.md](docs/autopilot.md)). No mesmo PR da mudança; nunca arredonde para cima.
 
 ## Onde ficam as coisas
 

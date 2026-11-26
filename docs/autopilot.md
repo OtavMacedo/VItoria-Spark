@@ -28,8 +28,25 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    desligada por padrão quando houver risco.
 5. **Provar:** pelo menos duas execuções com a mudança e duas sem, mesmo build, caches aquecidos. Comparar a mediana e
    o p95 do quadro e os componentes. Mudança no tradutor: descartar a primeira execução (pipelines sendo compiladas).
-6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados. Se
+6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados.
+   Se o avanço for muito relevante (critérios abaixo), o mesmo PR atualiza o README. Se
    não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.
+
+## Atualizar o README (só avanços muito relevantes)
+
+O AutoPilot atualiza a seção "Onde estamos" e a tabela "Desempenho medido" do README **no mesmo PR** da mudança,
+mas só quando o avanço for muito relevante e medido. Isso vale quando:
+
+- a mediana de fps no mundo sobe **10% ou mais** (ou o quadro cai 10% ou mais), na mesma placa e cena, confirmada
+  em pelo menos 2 execuções de cada lado;
+- os quadros de mais de 1 s caem **pela metade ou mais**, nas mesmas condições;
+- um item de "Ainda não" passa a funcionar (por exemplo, programas antes recusados agora rodam, ou um efeito que
+  faltava aparece);
+- uma placa de outro fabricante, ou de outra geração, ganha a primeira medição publicada.
+
+Ganhos menores, correções internas e melhorias de log não mudam o README; ficam no PR e na issue. Ao atualizar:
+números agregados apenas, a data e a placa da medição, nada do jogo (nomes, capturas, logs) e nenhum número
+arredondado para cima.
 
 ## Lei e limites (inegociáveis)
 
