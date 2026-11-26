@@ -681,9 +681,10 @@ pub(crate) fn pipeline(
 pub(crate) fn save(now: bool) {
     static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
     const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
-    let (Some(dir), Some(library)) = (DIR.get(), library()) else {
-        return;
-    };
+    // Without a library (vkd3d-proton refuses the empty blob) the early list
+    // is still written (fork PR #259).
+    let Some(dir) = DIR.get() else { return };
+    let library = library();
     {
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
         if !now && last.is_some_and(|t| t.elapsed() < SAVE_EVERY) {
@@ -696,20 +697,17 @@ pub(crate) fn save(now: bool) {
         return;
     }
     let tmp = dir.join(LIBRARY_FILE).with_extension("tmp");
-    // The bytes of the library written to `tmp`; 0 when no pipeline was
+    // The bytes of the library written to `tmp`; None when no pipeline was
     // added: the library on disk is then what it was, and only the early
     // list is written (a title pipeline first drawn with wrote all 1,352 MB
     // of the library again: run 60's second save).
-    let bytes = {
+    let bytes = if let Some(library) = library {
         let _all = one_call();
         // No store between asking the size and writing; loads go on.
         let _alone = library.saving.write().unwrap_or_else(|e| e.into_inner());
         let added = library.added.load(Ordering::Relaxed);
-        if !USED_CHANGED.swap(false, Ordering::Relaxed) && added == 0 {
-            return;
-        }
         if added == 0 {
-            0
+            None
         } else {
             // SAFETY: a plain query.
             let size = unsafe { library.library.GetSerializedSize() };
@@ -721,16 +719,19 @@ pub(crate) fn save(now: bool) {
             }
             library.added.store(0, Ordering::Relaxed);
             SAVED.store(size as u64, Ordering::Relaxed);
-            size
+            Some(size)
         }
+    } else {
+        None
     };
-    let used: Vec<String> = USED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .flatten()
-        .cloned()
-        .collect();
+    let used: Vec<String> = {
+        let used = USED.lock().unwrap_or_else(|e| e.into_inner());
+        if !USED_CHANGED.swap(false, Ordering::Relaxed) && bytes.is_none() {
+            return;
+        }
+        used.iter().flatten().cloned().collect()
+    };
+    let bytes = bytes.unwrap_or(0);
     let library_written = if bytes > 0 {
         replace_library(dir, &tmp)
     } else {
@@ -765,7 +766,10 @@ pub(crate) fn save(now: bool) {
             started_early = EARLY.load(Ordering::Relaxed),
             "host pipeline library saved"
         ),
-        Err(e) => tracing::warn!(error = %e, "host pipeline library not saved"),
+        Err(e) => {
+            USED_CHANGED.store(true, Ordering::Relaxed);
+            tracing::warn!(error = %e, "host pipeline library not saved");
+        }
     }
 }
 
@@ -809,6 +813,34 @@ fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Called once a second by the host's sweep: saves the early list on a
+/// thread of its own (at most every 20 s, as [`save`]) when draws asked
+/// for pipelines that no worker made since: the workers save only after
+/// making one, so keys first drawn with after the last of them were lost
+/// to a run that did not end cleanly (the lab ends runs with SIGTERM; a
+/// player closes the window).
+pub(crate) fn save_soon() {
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    static SAVING: AtomicBool = AtomicBool::new(false);
+    let now = crate::host::now_ms();
+    if !USED_CHANGED.load(Ordering::Relaxed)
+        || now < LAST.load(Ordering::Relaxed) + 20_000
+        || SAVING.swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+    LAST.store(now, Ordering::Relaxed);
+    let spawned = std::thread::Builder::new()
+        .name("victory-pipeline-save".into())
+        .spawn(|| {
+            save(false);
+            SAVING.store(false, Ordering::Relaxed);
+        });
+    if spawned.is_err() {
+        SAVING.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Title pipeline keys requested by draws or dispatches (this run and the last).
@@ -861,6 +893,24 @@ mod tests {
         assert_ne!(a, name("mesh", b"root", &[b"vs", b"ps"], "state"));
         // Parts do not run into each other.
         assert_ne!(a, name("graphics", b"root", &[b"vsp", b"s"], "state"));
+    }
+
+    /// The early list is written whether or not the host gives a pipeline
+    /// library (vkd3d-proton under Wine gives none), and a failed write is
+    /// tried again on the next save.
+    #[test]
+    fn the_early_list_is_saved_with_or_without_a_library() {
+        let dir = tempfile::tempdir().unwrap();
+        use_pipeline_cache(dir.path().to_owned());
+        assert_eq!(DIR.get().map(PathBuf::as_path), Some(dir.path()));
+        let path = dir.path().join(EARLY_FILE);
+        std::fs::create_dir(&path).unwrap();
+        note_used("early-list-test");
+        save(true);
+        std::fs::remove_dir(&path).expect("the obstruction remains after the failed save");
+        save(true);
+        let listed = std::fs::read_to_string(&path).expect("the early list after retry");
+        assert!(listed.lines().any(|l| l == "early-list-test"), "{listed}");
     }
 
     #[test]
