@@ -68,7 +68,8 @@ Medido em 26/11/2026 numa RTX 3060 12 GB, com Ryzen 5 5600GT e 32 GB de RAM.
 - **Em teste, +35 % de fps:** com `VICTORY_SKIP_WC_BACK=1` a mediana foi de 3,5–3,7 para 4,9–5,0 fps na RTX 3060
   (2 sessões de cada lado). Fica desligada por padrão até confirmarmos, em mais sessões, que a imagem não muda.
 - **Programas wave64 em placas de 32 lanes (NVIDIA):** o driver recusa cerca de 400 programas de compute do pacote,
-  dois deles usados nas primeiras áreas. A forma de 32 lanes cobre só alguns por enquanto.
+  dois deles usados nas primeiras áreas. Correção em teste para grupos de várias ondas: `VICTORY_WAVE_PAIR=1` com o
+  programa em `VICTORY_WAVE_WIDE_ONLY` (um dos dois já passa no driver fora do jogo; falta a confirmação em jogo).
 - **Memória:** com 32 GB de RAM ainda há 12–14 quadros de mais de 1 s por sessão de 9 min, quando a RAM livre acaba.
   Com o orçamento automático de VRAM (o padrão), eles caíram **para menos da metade**: eram 31–40 com orçamentos
   fixos acima do que a placa comporta. Não defina `VICTORY_TEXTURE_BUDGET_MB` acima da VRAM livre.
