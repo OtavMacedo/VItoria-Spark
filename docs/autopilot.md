@@ -6,7 +6,8 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
 ## Como ligar
 
 1. Clone o repositório e instale Rust, Visual Studio Build Tools, Python 3.11+ e `pip install pycaw` (para o áudio
-   mudo). Faça login no GitHub CLI com a sua conta: `gh auth login`.
+   mudo). Faça login no GitHub CLI com a sua conta: `gh auth login`. No Linux, no lugar do Build Tools e do
+   `pycaw`, siga [linux.md](linux.md) (seção "AutoPilot no Linux").
 2. Configure `victory.toml` (a partir de `victory.example.toml`) com `game_dir` apontando para **a sua cópia**, fora do
    repositório.
 3. **Você mesmo** roda uma vez `python scripts/autopilot.py confirmar` e lê a declaração. O agente não pode fazer isso

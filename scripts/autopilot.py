@@ -13,10 +13,11 @@ Uso:
 - `confirmar` registra, fora do repositório, que a pessoa declarou usar a própria cópia, obtida legalmente. O
   AutoPilot não roda sem isso (docs/autopilot.md).
 - O título vem de `--jogo`, de `SPARK_JOGO` ou do `game_dir` de `victory.toml`.
-- Logs, `resumo.md` e capturas ficam em `SPARK_LOG_DIR` (padrão `%LOCALAPPDATA%\\VItoriaSpark\\execucoes`), nunca
-  dentro do repositório.
+- Logs, `resumo.md` e capturas ficam em `SPARK_LOG_DIR` (padrão `%LOCALAPPDATA%\\VItoriaSpark\\execucoes`; no Linux,
+  `~/.local/state/vitoria-spark/execucoes`), nunca dentro do repositório.
 - A janela fica fora da tela (`VICTORY_HIDDEN_WINDOW=1`) e as sessões de áudio do processo são silenciadas (precisa
-  de `pip install pycaw`).
+  de `pip install pycaw`). No Linux o título roda sob o Wine por `scripts/linux/spark.sh`, com o prefixo sem driver
+  de áudio durante a execução (docs/linux.md).
 - Só aperta A (Enter) para passar das telas iniciais. Uma execução por vez (trava na pasta de logs).
 """
 
@@ -29,8 +30,17 @@ import tomllib
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-EXE = Path(os.environ.get("VICTORY_EXE", RAIZ / "target" / "diag" / "victory.exe"))
-BASE = Path(os.environ.get("SPARK_LOG_DIR", Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VItoriaSpark" / "execucoes"))
+WINDOWS = os.name == "nt"
+# Fora do Windows o victory.exe é compilado para o Windows (cargo-xwin) e roda sob o Wine, pelo spark.sh.
+SPARK_SH = RAIZ / "scripts" / "linux" / "spark.sh"
+if WINDOWS:
+    _EXE_PADRAO = RAIZ / "target" / "diag" / "victory.exe"
+    _BASE_PADRAO = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "VItoriaSpark" / "execucoes"
+else:
+    _EXE_PADRAO = RAIZ / "target" / "x86_64-pc-windows-msvc" / "diag" / "victory.exe"
+    _BASE_PADRAO = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "vitoria-spark" / "execucoes"
+EXE = Path(os.environ.get("VICTORY_EXE", _EXE_PADRAO))
+BASE = Path(os.environ.get("SPARK_LOG_DIR", _BASE_PADRAO))
 CONFIRMACAO = BASE.parent / "autopilot-confirmado.txt"
 
 
@@ -58,7 +68,24 @@ def achar_jogo(arg: str | None) -> Path:
     sys.exit("Não deu para escolher o executável: passe o .exe em --jogo.")
 
 
+def victory(args: list[str]) -> list[str]:
+    """Linha de comando do victory.exe: direto no Windows, pelo Wine (spark.sh) nos outros sistemas."""
+    if WINDOWS:
+        return [str(EXE), *args]
+    return ["bash", str(SPARK_SH), "victory", *args]
+
+
+def encerrar(p: subprocess.Popen) -> None:
+    """Fecha a árvore de processos da execução: taskkill no Windows, wineserver -k do prefixo dedicado no Linux."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+    else:
+        subprocess.run(["bash", str(SPARK_SH), "parar"], capture_output=True)
+
+
 def silenciar() -> None:
+    if not WINDOWS:
+        return
     try:
         from pycaw.pycaw import AudioUtilities
     except ImportError:
@@ -116,10 +143,12 @@ def aquecer(args: list[str]) -> int:
         sys.exit("Sem execuções anteriores com o título no mundo: rode `rodar` uma vez antes de `aquecer`.")
     usados.write_text("\n".join(sorted(hashes)) + "\n")
     env = dict(os.environ)
+    if not WINDOWS:
+        env["VICTORY_EXE"] = str(EXE)
     env.update(VICTORY_HOST_WAVE=str(wave), VICTORY_VIEW_LIMIT=str(int(views) - 1))
     env.update(extra)
     inicio = time.time()
-    r = subprocess.run([str(EXE), "translate", "--warm", str(usados), str(exe_titulo.parent)], env=env)
+    r = subprocess.run(victory(["translate", "--warm", str(usados), str(exe_titulo.parent)]), env=env)
     print(f"aquecer: {len(hashes)} shaders conhecidos, {time.time() - inicio:.0f} s, código {r.returncode}")
     return r.returncode
 
@@ -147,10 +176,14 @@ def rodar(args: list[str]) -> int:
     if dentro_do_repo(BASE) or dentro_do_repo(exe_titulo):
         sys.exit("Logs e título precisam ficar fora do repositório (docs/asset-policy.md).")
     if not EXE.exists():
-        sys.exit(f"Compile antes: cargo build --profile diag -p victory --features diagnostics ({EXE.name})")
+        if WINDOWS:
+            sys.exit(f"Compile antes: cargo build --profile diag -p victory --features diagnostics ({EXE.name})")
+        sys.exit(f"Compile antes: scripts/linux/spark.sh compilar diag ({EXE.name})")
     pasta = BASE / nome
     pasta.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
+    if not WINDOWS:
+        env.update(VICTORY_EXE=str(EXE), SPARK_SEM_SOM="1")
     env.update(
         VICTORY_GAME_DIR=str(exe_titulo.parent),
         VICTORY_HIDDEN_WINDOW="1",
@@ -173,7 +206,7 @@ def rodar(args: list[str]) -> int:
     try:
         with open(pasta / "saida.log", "wb") as saida:
             p = subprocess.Popen(
-                [str(EXE), "run", str(exe_titulo), "--execute"],
+                victory(["run", str(exe_titulo), "--execute"]),
                 env=env, stdout=saida, stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -189,7 +222,7 @@ def rodar(args: list[str]) -> int:
                     break
             fim = fim or ("saiu sozinho" if p.poll() is not None else "encerrado no tempo")
             if p.poll() is None:
-                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+                encerrar(p)
                 try:
                     p.wait(180)
                 except subprocess.TimeoutExpired:
