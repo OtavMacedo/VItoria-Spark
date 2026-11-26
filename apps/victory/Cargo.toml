@@ -22,6 +22,9 @@ clap.workspace = true
 walkdir.workspace = true
 
 [features]
+# mimalloc as the process's allocator instead of the system heap: per-thread
+# caches for the submitting thread's many short-lived vectors. Off by default.
+mimalloc = ["victory-gpu/mimalloc"]
 # Debug-level logs and the debugging switches (frame capture, stack dumps,
 # the host debug layer, scripted keys). Off in a plain release build.
 diagnostics = [

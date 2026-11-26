@@ -28,6 +28,14 @@ mod census;
 pub mod console;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod copystat;
+
+/// mimalloc as the process's allocator (feature `mimalloc`): per-thread
+/// caches instead of the system heap's lock for the many short-lived
+/// vectors of a submission. A diagnostics build counts blocks on top of it
+/// (`copystat`).
+#[cfg(all(feature = "mimalloc", not(all(windows, feature = "diagnostics"))))]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod descriptor;
 pub mod device;
 #[cfg_attr(not(windows), allow(dead_code))]

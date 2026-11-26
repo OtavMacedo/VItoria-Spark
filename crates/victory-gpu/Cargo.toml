@@ -17,6 +17,7 @@ anyhow.workspace = true
 victory-formats.workspace = true
 victory-pipeline.workspace = true
 victory-shader.workspace = true
+mimalloc = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -24,6 +25,8 @@ tempfile.workspace = true
 [features]
 # Debugging switches (frame capture, the host debug layer, per-draw data).
 diagnostics = []
+# mimalloc as the process's allocator (`victory` feature `mimalloc`).
+mimalloc = ["dep:mimalloc"]
 
 [lints]
 workspace = true

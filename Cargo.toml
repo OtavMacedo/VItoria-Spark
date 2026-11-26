@@ -43,6 +43,8 @@ walkdir = "2.5.1"
 tempfile = "3.27.0"
 # Opus decoding for the console's audio decoder (BSD-3-Clause, pure Rust).
 opus-pure = "0.2.4"
+# Allocator with per-thread caches, as an opt-in feature of the executable (MIT).
+mimalloc = { version = "0.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
