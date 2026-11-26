@@ -40,6 +40,33 @@ Limites legais embutidos: só a sua cópia, obtida legalmente; nada de baixar ou
 que contorne proteção de cópia; no máximo 3 issues e 1 PR por sessão. O ciclo completo está em
 [docs/autopilot.md](docs/autopilot.md).
 
+## Onde estamos
+
+Medido em 26/11/2026 numa RTX 3060 12 GB, com Ryzen 5 5600GT e 32 GB de RAM.
+
+**Já funciona**
+- O título inicia, roda menus e vídeos a 30 fps, carrega o perfil e o save e entra no mundo 3D.
+- O mundo aparece iluminado e com texturas, com personagens, cenário e HUD.
+- O desempenho no mundo fica em **3,2–3,6 fps de mediana, com picos de 6,4 fps**, numa cena pesada (~4.750
+  desenhos por quadro).
+- Sessões de 9 minutos rodam sem crash e sem perda de dispositivo. O encerramento pelo watchdog na inicialização
+  está resolvido (`VICTORY_NO_WATCHDOG=1`, ligado no perfil comum).
+- O ambiente de contribuição está pronto:
+  - logs com resumo por sessão e a seção "Próximo alvo";
+  - perfis de ajustes por fabricante (NVIDIA, AMD, Intel);
+  - AutoPilot Mode;
+  - regras verificadas por hook e pela CI.
+
+**Ainda não**
+- **Jogável de verdade:** a meta é 30 fps; hoje o quadro leva ~280 ms, dividido entre a placa (~130–160 ms) e o
+  preparo das cópias de memória (~115–125 ms).
+- **Ray tracing:** o construtor das estruturas fica desligado, porque ligado derruba o FPS sem mudar a imagem. Áreas
+  iluminadas só por luz indireta ficam mais escuras que no console.
+- **Programas wave64 em placas de 32 lanes (NVIDIA):** o driver recusa cerca de 400 programas de compute do pacote,
+  dois deles usados nas primeiras áreas. A forma de 32 lanes cobre só alguns por enquanto.
+- **Memória:** com 32 GB de RAM ainda há quadros de mais de 1 s quando a RAM livre acaba.
+- **AMD e Intel:** ainda sem medição publicada.
+
 ## Destaques
 
 - **Desempenho:** cópias de memória para a placa por máscara de bytes, uma consulta de páginas alteradas por reserva,
