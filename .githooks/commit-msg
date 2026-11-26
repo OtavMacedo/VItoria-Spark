@@ -1,0 +1,3 @@
+#!/bin/sh
+# Mensagem do commit: sem trailers de coautoria, sem dados pessoais (CONTRIBUTING.md, regra 4).
+python scripts/verificar.py --mensagem "$1"

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="VItoria Spark: compatibilidade Xbox Series no Windows, em Rust e Direct3D 12">
+  <title>VItoria Spark</title>
+  <defs>
+    <clipPath id="frame"><rect width="1280" height="360" rx="24"/></clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0d11"/><stop offset="1" stop-color="#0c1014"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#3ddc84" stop-opacity="0.20"/><stop offset="0.5" stop-color="#3ddc84" stop-opacity="0.06"/><stop offset="1" stop-color="#3ddc84" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" gradientUnits="userSpaceOnUse" x1="405" y1="0" x2="640" y2="0">
+      <stop offset="0" stop-color="#ffe033"/><stop offset="1" stop-color="#2fd673"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe033"/><stop offset="1" stop-color="#2fd673"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1280" height="360" fill="url(#bg)"/>
+
+    <!-- marca: uma faísca, um brilho -->
+    <circle cx="1064" cy="180" r="300" fill="url(#glow)">
+      <animate attributeName="opacity" values="1;0.6;1" dur="6s" repeatCount="indefinite"/>
+    </circle>
+    <path transform="translate(1064 180)" d="M16 -84 L-40 10 H-4 L-16 84 L40 -10 H4 Z" fill="url(#bolt)" stroke="url(#bolt)" stroke-width="7" stroke-linejoin="round"/>
+
+    <g font-family="'Segoe UI', Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+      <text x="92" y="150" font-size="84" font-weight="700" letter-spacing="-2.5" fill="#f4f6f8">VItoria <tspan fill="url(#accent)">Spark</tspan></text>
+      <text x="96" y="210" font-size="23" font-weight="400" letter-spacing="0.2" fill="#98a3b3">Compatibilidade Xbox Series no Windows · Rust · Direct3D 12</text>
+
+      <g font-size="14.5" font-weight="600" letter-spacing="0.2" fill="#c9d1db">
+        <g transform="translate(96.5 244.5)">
+          <rect width="182" height="32" rx="16" fill="#ffffff0a" stroke="#ffffff1f"/>
+          <g transform="translate(24 16)">
+            <rect x="-11" y="-8" width="22" height="16" rx="3" fill="#009c3b"/>
+            <path d="M0 -6 L9 0 L0 6 L-9 0 Z" fill="#ffdf00"/>
+            <circle r="3.5" fill="#002776"/>
+          </g>
+          <text x="44" y="21">Projeto brasileiro</text>
+        </g>
+        <g transform="translate(288.5 244.5)">
+          <rect width="84" height="32" rx="16" fill="#ffffff0a" stroke="#ffffff1f"/>
+          <text x="42" y="21" text-anchor="middle">GPL-3.0</text>
+        </g>
+      </g>
+    </g>
+
+    <rect x="0.5" y="0.5" width="1279" height="359" rx="23.5" fill="none" stroke="#ffffff1f"/>
+  </g>
+</svg>

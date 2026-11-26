@@ -1,0 +1,60 @@
+# AutoPilot Mode
+
+Aponte um agente de código (Claude Code ou similar) para este repositório e para a pasta do seu título. Ele mede,
+encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR sozinho, dentro das regras abaixo.
+
+## Como ligar
+
+1. Clone o repositório e instale Rust, Visual Studio Build Tools, Python 3.11+ e `pip install pycaw` (para o áudio
+   mudo). Faça login no GitHub CLI com a sua conta: `gh auth login`.
+2. Configure `victory.toml` (a partir de `victory.example.toml`) com `game_dir` apontando para **a sua cópia**, fora do
+   repositório.
+3. **Você mesmo** roda uma vez `python scripts/autopilot.py confirmar` e lê a declaração. O agente não pode fazer isso
+   por você.
+4. Abra o agente na pasta do repositório e diga:
+
+   > Leia o CLAUDE.md e entre em AutoPilot Mode. Título em `<pasta do jogo>`.
+
+## O ciclo
+
+1. **Sincronizar:** `git fetch`, rebase na `main` e leitura das issues abertas com o rótulo `autopilot`, para não
+   repetir trabalho de outra pessoa.
+2. **Medir:** compilar o build de diagnóstico e rodar `python scripts/autopilot.py rodar base-1`, depois `base-2`. Cada
+   execução roda escondida, sem som e por tempo fixo, e gera o `resumo.md` fora do repositório.
+3. **Escolher o alvo:** a seção "Próximo alvo" do `resumo.md` diz onde está o gargalo. O agente procura uma issue
+   aberta sobre o mesmo problema. Se existir, comenta nela com os números agregados; se não, abre uma issue nova
+   (modelo `autopilot`) e se atribui a ela.
+4. **Implementar:** branch `autopilot/<assunto>`, uma mudança lógica por commit, testes de unidade, e opção nova
+   desligada por padrão quando houver risco.
+5. **Provar:** pelo menos duas execuções com a mudança e duas sem, mesmo build, caches aquecidos. Comparar a mediana e
+   o p95 do quadro e os componentes. Mudança no tradutor: descartar a primeira execução (pipelines sendo compiladas).
+6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados. Se
+   não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.
+
+## Lei e limites (inegociáveis)
+
+O AutoPilot existe para melhorar software livre, não para distribuir jogos. Estas regras protegem você e o projeto:
+
+- **Só a sua cópia, obtida legalmente.** O agente nunca baixa, procura, pede ou indica onde conseguir jogos, chaves,
+  firmware, SDKs ou arquivos de terceiros.
+- **Sem contornar proteção.** O agente não escreve nem usa código para quebrar criptografia, assinatura ou proteção de
+  cópia. Se um arquivo estiver protegido, ele para e informa você.
+- **Nada do jogo sai da sua máquina.** Nenhum arquivo, trecho de log, captura, quadro, vídeo, dump ou nome de
+  conteúdo vai para issues, PRs, commits ou qualquer serviço. Só números agregados (ms, fps, contagens) e código
+  próprio ([docs/asset-policy.md](asset-policy.md)).
+- **Só código com licença compatível.** Trazer código de outro projeto só se ele for GPL-3.0 ou compatível, com o
+  autor e a origem no commit. Nunca copiar código ou documentação proprietária, como SDKs de console.
+- **Respeito ao GitHub e às pessoas:** no máximo 3 issues e 1 PR por sessão, sempre procurando duplicatas antes, sem
+  menções a pessoas que não estão na conversa, sem spam e sem pedir revisão repetidamente.
+- **Você responde pelo que o agente publica.** Tudo sai pela sua conta. Revise as primeiras issues e os primeiros PRs.
+
+Este documento não é aconselhamento jurídico. As leis variam por país; em caso de dúvida, não publique.
+
+## Quando o AutoPilot para sozinho
+
+- Não existe a confirmação de `scripts/autopilot.py confirmar`.
+- O `game_dir`, os logs ou o cache estão dentro do repositório.
+- Um hook ou a CI recusou algo. O agente corrige; nunca usa `--no-verify`.
+- Duas execuções seguidas falham na inicialização pelo mesmo motivo: ele abre uma issue com o código de exceção, o
+  módulo e o offset, sem log.
+- Atingiu o limite de issues/PRs da sessão ou ficou sem um alvo medido.

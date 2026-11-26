@@ -1,0 +1,4 @@
+#!/bin/sh
+# Regras do VItoria Spark em cada commit. Ative com: git config core.hooksPath .githooks
+cargo xtask policy --staged || exit 1
+python scripts/verificar.py --staged || exit 1

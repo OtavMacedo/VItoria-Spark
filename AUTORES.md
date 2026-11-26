@@ -1,0 +1,91 @@
+# Autores
+
+O VItoria Spark é um fork do [VIctory](https://github.com/Marvisak/VIctory). O código herdado é de seus autores e
+segue sob a GPL-3.0. Pessoas que escreveram código incluído neste repositório, em ordem alfabética:
+
+- 9hvn9yt2vk-netizen
+- Abdellah K.
+- Advait Palve
+- AlanQiang0418
+- alessiodeia
+- Andrea Casale
+- AnoHunted
+- artor410
+- avatarmanz
+- avt0m4t48
+- BaggyALPHA
+- Bartosz
+- BradRoland
+- Bruno Magalhães
+- Carlos Sant'Anna
+- Carver
+- Chase Brannen
+- Chipsrain
+- Claude
+- Codex
+- cxccxc
+- Dathinel
+- davutsimsekk
+- DexNom
+- Duff
+- EatCodeSleep2
+- Enzo Souza Duarte
+- Exorion
+- FIocker
+- flxppr
+- fuzeofficial
+- fxceless
+- Garu667
+- Geckomacabre
+- Henrique Bueno
+- hophaver
+- ifBars
+- ismailchaka1
+- itsRevela
+- jaschinski97-ops
+- Jeremy Goldberg
+- JRamos1993
+- julio
+- KainanP
+- KoLolX3
+- Kyle Soderlund
+- lameloball2813-ui
+- laptopnotebook
+- LaunchDoesntCode
+- local
+- lordon1a
+- Louis Faust
+- LUIS LARIOS
+- Luiz Neves
+- Lyrnc
+- Manuel Pérez
+- Maraco91
+- marquezini
+- Marvis
+- meower
+- nathanbzrr
+- nino-exe
+- Nostyxx
+- oddiums
+- Ortomanic
+- Pablo Barros
+- Pedro Fortunato
+- quaternion
+- r4.
+- raffclar
+- renzowit35
+- sagouindupm
+- Saitken91
+- SkippySteve
+- SpaghettiMaster545
+- Stellarr Studio
+- tedin7
+- TG0000
+- tjthebigbearcat-hub
+- tuffn3ss
+- Vanthys
+- victory-local
+- Vladimir
+- Yaekai
+- Yorivel
+- ZazaJr24
