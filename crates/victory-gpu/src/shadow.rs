@@ -1992,7 +1992,32 @@ static BACK_CLASS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 /// (per frame). A copy of a title buffer can go to the card's memory,
 /// where the card does the search (`VICTORY_CARD_BUFFERS_MIN_MB`); a
 /// window outside buffers cannot as the code stands.
+/// Time in [`Shadow::writing`] (ns) and its calls, since the last line
+/// ([`back_line`]): what a cheaper search of the declared ranges could
+/// take back.
+static WRITING: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+/// Adds the time since `since` to [`WRITING`] when dropped (every way out
+/// of [`Shadow::writing`]).
+struct WritingTimer(std::time::Instant);
+
+impl Drop for WritingTimer {
+    fn drop(&mut self) {
+        WRITING[0].fetch_add(self.0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        WRITING[1].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn back_line(frames: f64) {
+    let [writing_ns, writing_calls] =
+        [0, 1].map(|i| WRITING[i].swap(0, Ordering::Relaxed) as f64 / frames);
+    if writing_calls > 0.0 {
+        tracing::info!(
+            "declared shader writes per frame: {writing_calls:.0} declarations, {:.2} ms in them (search of the ranges              declared before and the snapshot of the new parts)",
+            writing_ns / 1e6
+        );
+    }
     let c: Vec<f64> = BACK_CLASS
         .iter()
         .map(|c| c.swap(0, Ordering::Relaxed) as f64 / frames)
@@ -3339,6 +3364,7 @@ impl Shadow {
         if self.place.is_some() {
             return;
         }
+        let _timer = WritingTimer(std::time::Instant::now());
         let range = (address, address + len);
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         // With the copy-back on its own thread: counted for this submission
