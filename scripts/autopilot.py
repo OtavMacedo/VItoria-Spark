@@ -1,14 +1,18 @@
 """AutoPilot Mode: roda o título escondido e sem som por um tempo fixo e guarda os logs fora do repositório.
 
 Uso:
-  python scripts/autopilot.py rodar <nome> [--segundos 480] [--amostras 60] [--jogo <pasta ou .exe>] [CHAVE=valor ...]
+  python scripts/autopilot.py rodar <nome> [--segundos 900] [--amostras 60] [--precisao 3] [--jogo <pasta ou .exe>]
+                                   [CHAVE=valor ...]
   python scripts/autopilot.py aquecer [--jogo <pasta ou .exe>] [CHAVE=valor ...]
   python scripts/autopilot.py confirmar
 
 - `aquecer` traduz para o cache, antes de abrir o título e em todos os núcleos, os shaders que as execuções
   anteriores usaram (`victory translate --warm`). Rode-o depois de mudar o tradutor ou uma opção dele: a primeira
   execução seguinte não perde minutos traduzindo durante o jogo. Passe as mesmas CHAVE=valor da execução.
-- `rodar` para sozinho quando já tem `--amostras` linhas de quadro no mundo (padrão 60, 0 para usar só o tempo).
+- `rodar` mede só a cena estável (4.500+ desenhos, 60 s depois do 1º quadro do mundo; ver `scripts/amostras.py`) e
+  para sozinho quando o intervalo de 95 % da mediana do quadro cabe em ±`--precisao` % (padrão 3; 0 desliga), quando
+  já tem `--amostras` linhas da cena estável (padrão 60, 0 sem teto) ou no tempo. Com `SPARK_AB=CHAVE` (A/B dentro da
+  execução), para quando a diferença entre os braços é significativa ou o intervalo dela fica estreito.
 
 - `confirmar` registra, fora do repositório, que a pessoa declarou usar a própria cópia, obtida legalmente. O
   AutoPilot não roda sem isso (docs/autopilot.md).
@@ -28,6 +32,9 @@ import sys
 import time
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from amostras import Parada  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -100,22 +107,6 @@ def silenciar() -> None:
         pass
 
 
-QUADRO = re.compile(rb"[0-9.]+ fps, [0-9.]+ ms/frame \(.*?([0-9]+) draws/frame")
-
-
-def amostras_do_mundo(log: Path, desde: int) -> tuple[int, int]:
-    """Bytes lidos do log e quantas linhas de quadro no mundo (500+ desenhos) apareceram depois de `desde`."""
-    try:
-        with open(log, "rb") as f:
-            f.seek(desde)
-            dados = f.read()
-    except OSError:
-        return desde, 0
-    fim = dados.rfind(b"\n") + 1
-    novas = sum(1 for m in QUADRO.finditer(dados[:fim]) if int(m.group(1)) >= 500)
-    return desde + fim, novas
-
-
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HASH = re.compile(r"(?:hash=|\[(?:compute|vertex|pixel|mesh|amplification|geometry|hull|domain) )([0-9a-f]{16})")
 
@@ -156,13 +147,15 @@ def aquecer(args: list[str]) -> int:
 def rodar(args: list[str]) -> int:
     if not CONFIRMACAO.exists():
         sys.exit("Rode antes: python scripts/autopilot.py confirmar (docs/autopilot.md, seção Lei e limites).")
-    nome, segundos, amostras, jogo, extra = None, 480, 60, None, {}
+    nome, segundos, amostras, precisao, jogo, extra = None, 900, 60, 3.0, None, {}
     it = iter(args)
     for a in it:
         if a == "--segundos":
             segundos = int(next(it))
         elif a == "--amostras":
             amostras = int(next(it))
+        elif a == "--precisao":
+            precisao = float(next(it))
         elif a == "--jogo":
             jogo = next(it)
         elif "=" in a:
@@ -211,14 +204,14 @@ def rodar(args: list[str]) -> int:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             inicio = time.time()
-            lidas, mundo, fim = 0, 0, None
+            parada = Parada(pasta / "saida.log", pasta, env, precisao=precisao, maximo=amostras)
+            fim = None
             while p.poll() is None and time.time() - inicio < segundos:
                 silenciar()
                 time.sleep(1)
-                lidas, novas = amostras_do_mundo(pasta / "saida.log", lidas)
-                mundo += novas
-                if amostras and mundo >= amostras:
-                    fim = f"parado com {mundo} amostras do mundo"
+                motivo = parada.decidir()
+                if motivo and (precisao > 0 or "teto" in motivo):
+                    fim = motivo
                     break
             fim = fim or ("saiu sozinho" if p.poll() is not None else "encerrado no tempo")
             if p.poll() is None:
@@ -231,6 +224,14 @@ def rodar(args: list[str]) -> int:
         trava.unlink(missing_ok=True)
     resumos = sorted(pasta.rglob("resumo.md"))
     print(f"{nome}: {fim} após {time.time() - inicio:.0f} s, código {p.returncode}")
+    print(parada.estado())
+    if parada.ab:
+        # O veredito de 20 linhas (scripts/veredito.py), com o piso de ruído se houver.
+        ruido = BASE / "ruido.json"
+        cmd = [sys.executable, str(RAIZ / "scripts" / "veredito.py"), str(pasta)]
+        if ruido.exists():
+            cmd += ["--ruido", str(ruido)]
+        subprocess.run(cmd)
     print(f"pasta: {pasta}")
     if resumos:
         print(f"resumo: {resumos[-1]}")

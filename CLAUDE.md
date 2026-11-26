@@ -56,8 +56,9 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
 - **Antes de tudo**, confira se existe a confirmação de `python scripts/autopilot.py confirmar`. Se não existir, peça
   que a pessoa a rode (`! python scripts/autopilot.py confirmar`). **Nunca** rode `confirmar` nem digite a declaração
   no lugar dela.
-- Rode o título só por `python scripts/autopilot.py rodar <nome>`: janela escondida, sem som, para com 60 amostras
-  do mundo, logs fora do repositório e uma execução por vez. Não feche processos que não iniciou.
+- Rode o título só por `python scripts/autopilot.py rodar <nome>`: janela escondida, sem som, para quando a cena estável
+  está medida (ou com `SPARK_AB`, quando o A/B decide), logs fora do repositório e uma execução por vez. Não feche
+  processos que não iniciou.
 - Mudou o tradutor ou uma opção dele? Rode `python scripts/autopilot.py aquecer [CHAVE=valor ...]` antes de medir:
   é bem mais rápido traduzir antes, em todos os núcleos, do que durante o jogo.
 - Leia o `resumo.md` primeiro. Em issues e PRs vão só números agregados. Nunca cole log, nome de conteúdo, caminho ou

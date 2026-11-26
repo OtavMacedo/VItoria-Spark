@@ -21,18 +21,32 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
 1. **Sincronizar:** `git fetch`, rebase na `main` e leitura das issues abertas com o rótulo `autopilot`, para não
    repetir trabalho de outra pessoa.
 2. **Medir:** compilar o build de diagnóstico e rodar `python scripts/autopilot.py rodar base-1`, depois `base-2`. Cada
-   execução roda escondida e sem som, para sozinha quando já tem 60 amostras de quadro no mundo (ou no tempo
-   limite) e gera o `resumo.md` fora do repositório.
+   execução roda escondida e sem som, mede só a cena estável e para sozinha quando a mediana do quadro já está
+   medida com ±3 % (intervalo de 95 %), com 60 amostras da cena estável ou no tempo limite, e gera o `resumo.md` fora
+   do repositório.
 3. **Escolher o alvo:** a seção "Próximo alvo" do `resumo.md` diz onde está o gargalo. O agente procura uma issue
    aberta sobre o mesmo problema. Se existir, comenta nela com os números agregados; se não, abre uma issue nova
    (modelo `autopilot`) e se atribui a ela.
 4. **Implementar:** branch `autopilot/<assunto>`, uma mudança lógica por commit, testes de unidade, e opção nova
    desligada por padrão quando houver risco.
 5. **Provar:** pelo menos duas execuções com a mudança e duas sem, mesmo build, caches aquecidos. Comparar a mediana e
-   o p95 do quadro e os componentes. Depois de mudar o tradutor ou uma opção dele, rode antes
+   o p95 do quadro e os componentes. Uma opção que pode alternar dentro da execução ([logs.md](logs.md), seção
+   `SPARK_AB`) se prova numa execução só: `python scripts/autopilot.py rodar ab-1 SPARK_AB=VICTORY_X`; ela para quando
+   a parada sequencial decide (ver o veredito abaixo). Depois de mudar o tradutor ou uma opção dele, rode antes
    `python scripts/autopilot.py aquecer [CHAVE=valor ...]`: ele traduz em paralelo, antes do jogo, os shaders que as
    execuções anteriores usaram. Mesmo assim, as pipelines novas são compiladas na primeira execução, então não julgue a
    imagem nela.
+   O julgamento é sempre o de `python scripts/veredito.py <pasta da execução>` (A/B na execução) ou
+   `python scripts/veredito.py --a <execuções> --b <execuções>` (entre execuções): 20 linhas e um estado só
+   (GANHO, SEM_EFEITO, INCONCLUSIVO, REGRESSAO, PROBLEMA_DE_MEDICAO). GANHO exige o quadro 3 %+ mais curto com
+   confiança e nenhuma piora em p95, quadros > 1 s, falhas ou imagem (ver o cabeçalho do script). Leia só o
+   veredito; abra o log apenas com PROBLEMA_DE_MEDICAO. Antes de testar algo, veja se já foi decidido
+   (`python scripts/veredito.py --consultar <decisoes.jsonl> <CHAVE>`), e registre o resultado com `--registrar`.
+   Um GANHO só vale depois de confirmado numa segunda execução independente.
+   O piso de ruído da sua máquina sai de uma execução A/A (os dois braços iguais):
+   `python scripts/autopilot.py rodar aa-1 SPARK_AB=VICTORY_STEP_INDEX=0/0` e depois
+   `python scripts/ab_estat.py <pasta> --gravar-ruido <SPARK_LOG_DIR>/ruido.json`; o veredito usa esse arquivo
+   (`--ruido`) para marcar execuções ruidosas demais.
 6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados.
    Se o avanço for muito relevante (critérios abaixo), o mesmo PR atualiza o README. Se
    não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.
