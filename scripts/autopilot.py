@@ -1,8 +1,14 @@
 """AutoPilot Mode: roda o título escondido e sem som por um tempo fixo e guarda os logs fora do repositório.
 
 Uso:
-  python scripts/autopilot.py rodar <nome> [--segundos 480] [--jogo <pasta ou .exe>] [CHAVE=valor ...]
+  python scripts/autopilot.py rodar <nome> [--segundos 480] [--amostras 60] [--jogo <pasta ou .exe>] [CHAVE=valor ...]
+  python scripts/autopilot.py aquecer [--jogo <pasta ou .exe>] [CHAVE=valor ...]
   python scripts/autopilot.py confirmar
+
+- `aquecer` traduz para o cache, antes de abrir o título e em todos os núcleos, os shaders que as execuções
+  anteriores usaram (`victory translate --warm`). Rode-o depois de mudar o tradutor ou uma opção dele: a primeira
+  execução seguinte não perde minutos traduzindo durante o jogo. Passe as mesmas CHAVE=valor da execução.
+- `rodar` para sozinho quando já tem `--amostras` linhas de quadro no mundo (padrão 60, 0 para usar só o tempo).
 
 - `confirmar` registra, fora do repositório, que a pessoa declarou usar a própria cópia, obtida legalmente. O
   AutoPilot não roda sem isso (docs/autopilot.md).
@@ -67,14 +73,66 @@ def silenciar() -> None:
         pass
 
 
+QUADRO = re.compile(rb"[0-9.]+ fps, [0-9.]+ ms/frame \(.*?([0-9]+) draws/frame")
+
+
+def amostras_do_mundo(log: Path, desde: int) -> tuple[int, int]:
+    """Bytes lidos do log e quantas linhas de quadro no mundo (500+ desenhos) apareceram depois de `desde`."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(desde)
+            dados = f.read()
+    except OSError:
+        return desde, 0
+    fim = dados.rfind(b"\n") + 1
+    novas = sum(1 for m in QUADRO.finditer(dados[:fim]) if int(m.group(1)) >= 500)
+    return desde + fim, novas
+
+
+HASH = re.compile(r"(?:hash=|\[(?:compute|vertex|pixel|mesh|amplification|geometry|hull|domain) )([0-9a-f]{16})")
+
+
+def aquecer(args: list[str]) -> int:
+    jogo, extra = None, {}
+    it = iter(args)
+    for a in it:
+        if a == "--jogo":
+            jogo = next(it)
+        elif "=" in a:
+            k, v = a.split("=", 1)
+            extra[k] = v
+    exe_titulo = achar_jogo(jogo)
+    usados = BASE / "shaders-usados.txt"
+    hashes = set(usados.read_text().split()) if usados.exists() else set()
+    wave, views = None, None
+    logs = sorted(BASE.glob("*/saida.log"), key=lambda q: q.stat().st_mtime)
+    for log in logs:
+        texto = log.read_text(encoding="utf-8", errors="replace")
+        hashes.update(HASH.findall(texto))
+        wave = (re.findall(r"host wave lanes min=\d+ max=(\d+)", texto) or [wave])[-1]
+        views = (re.findall(r"host view heaps hold (\d+) views", texto) or [views])[-1]
+    if not hashes or wave is None or views is None:
+        sys.exit("Sem execuções anteriores com o título no mundo: rode `rodar` uma vez antes de `aquecer`.")
+    usados.write_text("\n".join(sorted(hashes)) + "\n")
+    env = dict(os.environ)
+    env.update(VICTORY_HOST_WAVE=str(wave), VICTORY_VIEW_LIMIT=str(int(views) - 1))
+    env.update(extra)
+    inicio = time.time()
+    r = subprocess.run([str(EXE), "translate", "--warm", str(usados), str(exe_titulo.parent)], env=env)
+    print(f"aquecer: {len(hashes)} shaders conhecidos, {time.time() - inicio:.0f} s, código {r.returncode}")
+    return r.returncode
+
+
 def rodar(args: list[str]) -> int:
     if not CONFIRMACAO.exists():
         sys.exit("Rode antes: python scripts/autopilot.py confirmar (docs/autopilot.md, seção Lei e limites).")
-    nome, segundos, jogo, extra = None, 480, None, {}
+    nome, segundos, amostras, jogo, extra = None, 480, 60, None, {}
     it = iter(args)
     for a in it:
         if a == "--segundos":
             segundos = int(next(it))
+        elif a == "--amostras":
+            amostras = int(next(it))
         elif a == "--jogo":
             jogo = next(it)
         elif "=" in a:
@@ -119,10 +177,16 @@ def rodar(args: list[str]) -> int:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             inicio = time.time()
+            lidas, mundo, fim = 0, 0, None
             while p.poll() is None and time.time() - inicio < segundos:
                 silenciar()
                 time.sleep(1)
-            fim = "saiu sozinho" if p.poll() is not None else "encerrado no tempo"
+                lidas, novas = amostras_do_mundo(pasta / "saida.log", lidas)
+                mundo += novas
+                if amostras and mundo >= amostras:
+                    fim = f"parado com {mundo} amostras do mundo"
+                    break
+            fim = fim or ("saiu sozinho" if p.poll() is not None else "encerrado no tempo")
             if p.poll() is None:
                 subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
                 try:
@@ -160,5 +224,7 @@ if __name__ == "__main__":
         sys.exit(rodar(sys.argv[2:]))
     if cmd == ["confirmar"]:
         sys.exit(confirmar())
+    if cmd == ["aquecer"]:
+        sys.exit(aquecer(sys.argv[2:]))
     print(__doc__)
     sys.exit(2)

@@ -79,12 +79,21 @@ fn build() -> [u8; 32] {
     }
     h.update(&victory_shader::emit::translation_fingerprint());
     h.update(include_bytes!("shader_cache.rs"));
-    // The list this file reads for the translator ([`translate`]): the shader crate's
-    // fingerprint does not see it.
-    h.update(b"VICTORY_WAVE_WIDE_ONLY=");
-    if let Some(value) = std::env::var_os("VICTORY_WAVE_WIDE_ONLY") {
-        h.update(value.as_encoded_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// The key a container's translation is filed under: [`build`], and whether the container
+/// may take the wave-wide form ([`wave_wide_listed`]), which the shader crate's fingerprint
+/// does not see. Changing `VICTORY_WAVE_WIDE_ONLY` translates again only the containers whose
+/// place on the list changed, not the whole cache.
+fn key(container: &[u8]) -> [u8; 32] {
+    let base = build();
+    if !wave_wide_listed(&blake3::hash(container).to_hex()) {
+        return base;
     }
+    let mut h = blake3::Hasher::new();
+    h.update(&base);
+    h.update(b"wave-wide form allowed");
     *h.finalize().as_bytes()
 }
 
@@ -99,14 +108,14 @@ pub fn warm(container: &[u8]) -> Result<bool, String> {
         ran.store(true, Ordering::Relaxed);
         translate(c)
     };
-    cached(cache, &build(), container, translate).map(|_| ran.load(Ordering::Relaxed))
+    cached(cache, &key(container), container, translate).map(|_| ran.load(Ordering::Relaxed))
 }
 
 /// The translation of a console shader container, from the cache when
 /// there is one.
 pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
     match CACHE.get() {
-        Some(cache) => cached(cache, &build(), container, translate),
+        Some(cache) => cached(cache, &key(container), container, translate),
         None => translate(container),
     }
 }

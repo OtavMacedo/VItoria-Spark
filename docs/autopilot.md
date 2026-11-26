@@ -20,14 +20,18 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
 1. **Sincronizar:** `git fetch`, rebase na `main` e leitura das issues abertas com o rótulo `autopilot`, para não
    repetir trabalho de outra pessoa.
 2. **Medir:** compilar o build de diagnóstico e rodar `python scripts/autopilot.py rodar base-1`, depois `base-2`. Cada
-   execução roda escondida, sem som e por tempo fixo, e gera o `resumo.md` fora do repositório.
+   execução roda escondida e sem som, para sozinha quando já tem 60 amostras de quadro no mundo (ou no tempo
+   limite) e gera o `resumo.md` fora do repositório.
 3. **Escolher o alvo:** a seção "Próximo alvo" do `resumo.md` diz onde está o gargalo. O agente procura uma issue
    aberta sobre o mesmo problema. Se existir, comenta nela com os números agregados; se não, abre uma issue nova
    (modelo `autopilot`) e se atribui a ela.
 4. **Implementar:** branch `autopilot/<assunto>`, uma mudança lógica por commit, testes de unidade, e opção nova
    desligada por padrão quando houver risco.
 5. **Provar:** pelo menos duas execuções com a mudança e duas sem, mesmo build, caches aquecidos. Comparar a mediana e
-   o p95 do quadro e os componentes. Mudança no tradutor: descartar a primeira execução (pipelines sendo compiladas).
+   o p95 do quadro e os componentes. Depois de mudar o tradutor ou uma opção dele, rode antes
+   `python scripts/autopilot.py aquecer [CHAVE=valor ...]`: ele traduz em paralelo, antes do jogo, os shaders que as
+   execuções anteriores usaram. Mesmo assim, as pipelines novas são compiladas na primeira execução, então não julgue a
+   imagem nela.
 6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados.
    Se o avanço for muito relevante (critérios abaixo), o mesmo PR atualiza o README. Se
    não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.

@@ -161,6 +161,11 @@ fn main() -> Result<()> {
             jobs,
             warm,
         } => {
+            // The warm-up fills the cache a run reads: the same card maker's settings as `run`.
+            #[cfg(windows)]
+            if warm.is_some() {
+                victory_gpu::vendor::apply().log();
+            }
             // `VICTORY_VIEW_LIMIT=<null slot>`: translate as on a host whose view heap is capped
             if let Some(n) = std::env::var("VICTORY_VIEW_LIMIT")
                 .ok()
