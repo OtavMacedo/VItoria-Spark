@@ -64,7 +64,9 @@ Medido em 26/11/2026 numa RTX 3060 12 GB, com Ryzen 5 5600GT e 32 GB de RAM.
   iluminadas só por luz indireta ficam mais escuras que no console.
 - **Programas wave64 em placas de 32 lanes (NVIDIA):** o driver recusa cerca de 400 programas de compute do pacote,
   dois deles usados nas primeiras áreas. A forma de 32 lanes cobre só alguns por enquanto.
-- **Memória:** com 32 GB de RAM ainda há quadros de mais de 1 s quando a RAM livre acaba.
+- **Memória:** com 32 GB de RAM ainda há 12–14 quadros de mais de 1 s por sessão de 9 min, quando a RAM livre acaba.
+  Com o orçamento automático de VRAM (o padrão), eles caíram **para menos da metade**: eram 31–40 com orçamentos
+  fixos acima do que a placa comporta. Não defina `VICTORY_TEXTURE_BUDGET_MB` acima da VRAM livre.
 - **AMD e Intel:** ainda sem medição publicada.
 
 ## Destaques
@@ -100,7 +102,7 @@ Evidência pública para o [PortWatch VI](https://portwatch-vi.xyz/). São dados
 | Campo | Evidência |
 |---|---|
 | Desempenho | **3,2–3,6 fps de mediana, com picos de até 6,4 fps**, numa cena pesada (~4.750 desenhos por quadro); 30 fps nos menus |
-| Estabilidade | 2 sessões de 9 min sem crash e sem perda de dispositivo; com `VICTORY_NO_WATCHDOG=1`, o encerramento na inicialização não volta |
+| Estabilidade | 4 sessões de 9 min sem crash e sem perda de dispositivo; com `VICTORY_NO_WATCHDOG=1`, o encerramento na inicialização não volta; 12–14 quadros de mais de 1 s por sessão com o orçamento automático de VRAM |
 | Hardware | Windows 11 Pro · Ryzen 5 5600GT · 32 GB de RAM · NVIDIA RTX 3060 12 GB · 1080p |
 | Gargalo atual | a placa (~145–160 ms por quadro) e o preparo das cópias (~115–125 ms); a RAM chega ao limite e causa quadros longos |
 | Código | público, GPL-3.0, com 259 testes do tradutor e 234 da GPU passando |
