@@ -670,9 +670,11 @@ pub fn emit(
 /// branches around its cross-lane code taken wave-wide ([`structure::structure_wide`]): the
 /// lowering names the blocks where the two host waves must meet and could not
 /// (`lower::take_needs`), the branches whose regions hold them are widened, and so on until
-/// it translates or a branch cannot be widened. Only where a thread group is one console
-/// wave: with several, the waves of a group would decide differently and a barrier inside
-/// such a branch would wait for threads that never come.
+/// it translates or a branch cannot be widened. Where a thread group is one console wave; with
+/// several (a multiple of 64 threads), only with `VICTORY_WAVE_PAIR=1` (off by default): the
+/// waves of a group decide such a branch each on its own, so a group barrier inside it would
+/// wait for threads that never come, and each console wave's two host waves meet alone
+/// instead ([`lower::with_pair_meets`]), at a spin on a counter in shared memory.
 fn widen(
     c: &Container,
     native: &NativeProgram,
@@ -687,6 +689,18 @@ fn widen(
         // (a program whose waves are the host's meets no one: no barrier, any group)
         crate::native::StageIo::Cs(_) if !(native.wave64 && lower::host_max_wave() == 32) => {}
         crate::native::StageIo::Cs(cs) if cs.threads.iter().product::<u32>() == 64 => {}
+        crate::native::StageIo::Cs(cs)
+            if cs.threads.iter().product::<u32>() % 64 == 0
+                && std::env::var_os("VICTORY_WAVE_PAIR").is_some_and(|v| v == "1") =>
+        {
+            if why {
+                eprintln!(
+                    "WAVE64-WIDE thread groups of {:?}: the halves of each console wave meet alone",
+                    cs.threads
+                );
+            }
+            return lower::with_pair_meets(|| widen_branches(c, native, p, why));
+        }
         crate::native::StageIo::Cs(cs) => {
             if why {
                 eprintln!("WAVE64-WIDE not tried: thread groups of {:?}", cs.threads);
@@ -695,6 +709,16 @@ fn widen(
         }
         _ => return Err(NOT),
     }
+    widen_branches(c, native, p, why)
+}
+
+/// [`widen`]'s rounds, once the thread group allows them.
+fn widen_branches(
+    c: &Container,
+    native: &NativeProgram,
+    p: &ir::Program,
+    why: bool,
+) -> Result<(HostShader, Option<u32>), ShaderError> {
     let mut wide = std::collections::HashSet::new();
     loop {
         let st = structure::structure_wide(p, &wide)?;

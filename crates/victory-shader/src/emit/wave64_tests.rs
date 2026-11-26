@@ -995,3 +995,182 @@ fn a_parked_pair_another_save_or_restore_shares_stays_two_scalars() {
         assert!(!instructions(&p, "s_mov_b32").is_empty(), "{name}");
     }
 }
+
+/// `p` lowered for a 32-lane host as [`super::widen`] does it in a group of several console
+/// waves: the halves of each console wave meet alone ([`lower::with_pair_meets`]) and the
+/// branches around the places the lowering names are taken wave-wide until it goes through.
+/// Gives the shader and how many branches were widened.
+fn widened_in_pairs(native: &NativeProgram, p: &ir::Program) -> (HostShader, usize) {
+    let mut wide = HashSet::new();
+    loop {
+        lower::take_needs();
+        let r = lower::with_pair_meets(|| lowered(native, p, &wide));
+        let needs = lower::take_needs();
+        if needs.is_empty()
+            && let Ok(shader) = r
+        {
+            return (shader, wide.len());
+        }
+        let st = structure::structure_wide(p, &wide).expect("structure");
+        let more: Vec<usize> = lower::branches_around(&st, &needs)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| !wide.contains(b))
+            .collect();
+        assert!(!more.is_empty(), "nothing more to widen: {:?}", r.err());
+        wide.extend(more);
+    }
+}
+
+/// [`program`] in a group of `threads` (several console waves), each thread storing at dword
+/// `t >> 6` (its console wave's): the threads below s0 OR their bits `1 << (t >> 1 & 31)` over
+/// the console wave inside `if (t < s0)`.
+fn wave_or_per_console_wave(threads: u32) -> NativeProgram {
+    let mut words = vec![
+        0x7E0A_0281,      // v_mov_b32 v5, 1
+        0x2C0C_0081,      // v_lshrrev_b32 v6, 1, v0
+        0x340E_0B06,      // v_lshlrev_b32 v7, v6, v5
+        0x7D88_0000,      // v_cmp_gt_u32 vcc, s0, v0
+        0xBE8C_246A,      // s_and_saveexec_b64 s[12:13], vcc
+        0xBF88_0000 | 25, // s_cbranch_execz to the restore of EXEC
+    ];
+    words.extend_from_slice(&super::wave::WAVE_OR_V7_TO_S7);
+    words.extend_from_slice(&[
+        0x2C10_0086, // v_lshrrev_b32 v8, 6, v0
+        0x3410_1082, // v_lshlrev_b32 v8, 2, v8
+        0x7E00_0207, // v_mov_b32 v0, s7
+        0x38 << 26 | 0x1C << 18 | 1 << 12,
+        0x80 << 24 | 2 << 16 | 8, // buffer_store_dword v0, v8, s[8:11], 0 offen
+        0xBEFE_040C,              // s_mov_b64 exec, s[12:13]
+    ]);
+    native_of(&words, true, threads)
+}
+
+/// What [`wave_or_per_console_wave`] stores for console wave `w` with `below` threads inside.
+fn wave_or_expected(w: u32, below: u32) -> u32 {
+    (64 * w..64 * w + 64)
+        .filter(|&t| t < below)
+        .fold(0, |m, t| m | 1 << (t >> 1 & 31))
+}
+
+/// The skip around the wave OR of [`wave_or_per_console_wave`].
+fn branch_of(p: &ir::Program) -> usize {
+    (0..p.blocks.len())
+        .find(|&b| {
+            p.blocks[b]
+                .insts
+                .last()
+                .is_some_and(|i| i.name() == "s_cbranch_execz")
+        })
+        .expect("the skip")
+}
+
+/// Two and four console waves in a group, a wave OR (DPP rows, a cross-half permute and
+/// `v_readlane` of lane 32) inside a per-lane branch: the branch is taken wave-wide, and the
+/// console waves of a group take it or not each on its own (with s0 = 40 only the first one
+/// has a lane inside). Group barriers in it would wait for the waves that skip it; the halves
+/// of each console wave meet alone instead, and every console wave gets its own OR.
+#[test]
+fn a_wave_or_in_groups_of_several_console_waves_meets_per_console_wave() {
+    for threads in [128u32, 256] {
+        let native = wave_or_per_console_wave(threads);
+        let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
+        let (shader, widened) = widened_in_pairs(&native, &p);
+        assert_eq!(widened, 1, "{threads} threads");
+        // (the same with group barriers: what the pair meetings replace)
+        let barriers = lowered(&native, &p, &HashSet::from([branch_of(&p)])).expect("lower");
+        assert_ne!(shader.dxil, barriers.dxil, "{threads} threads");
+        if let Ok(mut v) =
+            validator::Validator::load(validator::Validator::default_path().as_deref())
+        {
+            let mut copy = shader.dxil.clone();
+            v.validate(&mut copy).expect("DXIL validation failed");
+        }
+        let _one = super::valu_tests::ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let waves = threads / 64;
+        for below in [0u32, 1, 10, 40, 64, 65, 100, 130, 200, 256] {
+            let Some(got) = whole_uav(&shader, [below, 0], waves) else {
+                return;
+            };
+            let expected: Vec<u32> = (0..waves).map(|w| wave_or_expected(w, below)).collect();
+            assert_eq!(got, expected, "{threads} threads, {below} inside");
+        }
+        eprintln!("ran on the hardware device: {threads} threads, each console wave's own OR");
+    }
+}
+
+/// Four console waves in a group of 256 with 1 KiB of LDS. Every thread writes its console
+/// lane (`v_mbcnt`) to LDS dword t; then inside `if (t < s0)` each lane reads the dword of
+/// its mirror lane `t ^ 63`, which the other half of its console wave wrote, and adds the
+/// count of lanes inside (`s_bcnt1` of EXEC) times 256 and lane 63's console lane
+/// (`v_readlane`, of a lane that may be outside) times 65536, stored at dword t.
+fn lds_mirror_program() -> NativeProgram {
+    let mut words = vec![
+        0xD765_0003,
+        0x0001_007E, // v_mbcnt_lo_u32_b32 v3, exec_lo, 0
+        0xD766_0003,
+        0x0002_067F, // v_mbcnt_hi_u32_b32 v3, exec_hi, v3
+        0x3408_0082, // v_lshlrev_b32 v4, 2, v0
+        0xD834_0000,
+        0x0000_0304,      // ds_write_b32 v4, v3
+        0x7D88_0000,      // v_cmp_gt_u32 vcc, s0, v0
+        0xBE8C_246A,      // s_and_saveexec_b64 s[12:13], vcc
+        0xBF88_0000 | 15, // s_cbranch_execz to the restore of EXEC
+        0xBE90_107E,      // s_bcnt1_i32_b64 s16, exec
+        0x3A0C_00BF,      // v_xor_b32 v6, 63, v0
+        0x340C_0C82,      // v_lshlrev_b32 v6, 2, v6
+        0xD8D8_0000,
+        0x0700_0006, // ds_read_b32 v7, v6
+    ];
+    words.extend_from_slice(&readlane(17, 3, 63));
+    words.extend_from_slice(&[
+        0x7E10_0210, // v_mov_b32 v8, s16
+        0x3410_1088, // v_lshlrev_b32 v8, 8, v8
+        0x4A0E_0F08, // v_add_nc_u32 v7, v8, v7
+        0x7E12_0211, // v_mov_b32 v9, s17
+        0x3412_1290, // v_lshlrev_b32 v9, 16, v9
+        0x4A0E_0F09, // v_add_nc_u32 v7, v9, v7
+        0x38 << 26 | 0x1C << 18 | 1 << 12,
+        0x80 << 24 | 2 << 16 | 7 << 8 | 4, // buffer_store_dword v7, v4, s[8:11], 0 offen
+        0xBEFE_040C,                       // s_mov_b64 exec, s[12:13]
+    ]);
+    let mut native = native_of(&words, true, 256);
+    native.io = StageIo::Cs(ComputeIo {
+        rsrc2: 5 << 1 | 2 << 15, // 5 user SGPRs, 2 granules of LDS
+        threads: [256, 1, 1],
+    });
+    native
+}
+
+#[test]
+fn lds_lane_reads_and_counts_in_groups_of_several_console_waves_are_the_consoles() {
+    let native = lds_mirror_program();
+    let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
+    let (shader, _) = widened_in_pairs(&native, &p);
+    if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
+        let mut copy = shader.dxil.clone();
+        v.validate(&mut copy).expect("DXIL validation failed");
+    }
+    let _one = super::valu_tests::ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for below in [0u32, 1, 31, 32, 33, 64, 100, 150, 192, 255, 256] {
+        let Some(got) = whole_uav(&shader, [below, 0], 256) else {
+            return;
+        };
+        let expected: Vec<u32> = (0..256u32)
+            .map(|t| {
+                if t >= below {
+                    return 0;
+                }
+                let w = t / 64;
+                let inside = (64 * w..64 * w + 64).filter(|&u| u < below).count() as u32;
+                (63 - t % 64) + 256 * inside + 65536 * 63
+            })
+            .collect();
+        assert_eq!(got, expected, "{below} threads inside");
+    }
+    eprintln!("ran on the hardware device: LDS, lane reads and counts per console wave");
+}

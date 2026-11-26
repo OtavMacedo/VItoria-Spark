@@ -397,6 +397,36 @@ impl Module {
         self.blocks.len() - 1
     }
 
+    /// Moves what `block` holds so far (its phis and instructions) into a new block, which
+    /// every branch to `block` enters instead; `block` keeps its terminator and the edges
+    /// leaving it, and what is added to it later follows the moved code. Gives the new block,
+    /// without a terminator: the caller joins it to `block`. Not for the entry block (block 0),
+    /// which must stay first.
+    pub fn split_front(&mut self, block: usize) -> usize {
+        debug_assert_ne!(block, 0, "the entry block");
+        let front = self.new_block();
+        let phis = std::mem::take(&mut self.blocks[block].phis);
+        let body = std::mem::take(&mut self.blocks[block].body);
+        self.blocks[front].phis = phis;
+        self.blocks[front].body = body;
+        let to = |t: &mut usize| {
+            if *t == block {
+                *t = front;
+            }
+        };
+        for b in &mut self.blocks {
+            match &mut b.term {
+                Some(Term::Br(t)) => to(t),
+                Some(Term::CondBr(_, t, f)) => {
+                    to(t);
+                    to(f);
+                }
+                _ => {}
+            }
+        }
+        front
+    }
+
     pub fn type_of(&self, v: V) -> Ty {
         match v {
             V::Global(i) => self.globals[i as usize].ptr,
