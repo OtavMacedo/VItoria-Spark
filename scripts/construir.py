@@ -7,6 +7,7 @@ Uso:
   python scripts/construir.py clippy [-p crate ...] # clippy -D warnings; sem -p, os crates tocados
   python scripts/construir.py status                # quem segura cada pasta e quanto espaço ocupa
   python scripts/construir.py artefato [diag|release] # caminho do executável deste commit (constrói se faltar)
+  (diag, release e artefato aceitam --features a,b: features a mais do executável, no nome do artefato)
 
 Cada build bem-sucedido também é copiado para `artefatos/<commit>[-sujo-<hash>]-<perfil>/victory.exe` ao lado do
 repositório (ou SPARK_ARTEFATOS): passe esse caminho em VICTORY_EXE, e um build seguinte não troca o executável de uma
@@ -181,20 +182,21 @@ def pasta_de_artefatos() -> Path:
     return Path(os.environ.get("SPARK_ARTEFATOS", RAIZ.parent / "artefatos"))
 
 
-def artefato(perfil: str) -> Path:
-    return pasta_de_artefatos() / f"{identidade()}-{perfil}" / "victory.exe"
+def artefato(perfil: str, extras: list[str] | None = None) -> Path:
+    sufixo = "".join(f"+{f}" for f in sorted(extras or []))
+    return pasta_de_artefatos() / f"{identidade()}-{perfil}{sufixo}" / "victory.exe"
 
 
-def construir(perfil: str) -> int:
-    alvo = artefato(perfil)
+def construir(perfil: str, extras: list[str] | None = None) -> int:
+    alvo = artefato(perfil, extras)
     if alvo.exists() and "-sujo-" not in alvo.parent.name:
         print(f"já construído: {alvo}")
         return 0
     with Trava(perfil):
         if perfil == "diag":
-            args = ["build", "--profile", "diag", "-p", "victory", "--features", "diagnostics"]
+            args = ["build", "--profile", "diag", "-p", "victory", "--features", ",".join(["diagnostics", *(extras or [])])]
         else:
-            args = ["build", "--release", "-p", "victory"]
+            args = ["build", "--release", "-p", "victory"] + (["--features", ",".join(extras)] if extras else [])
         codigo = cargo(perfil, args)
         if codigo == 0:
             origem = pasta_do_build(perfil) / perfil / "victory.exe"
@@ -263,8 +265,13 @@ def main() -> int:
         print(__doc__)
         return 2
     comando, resto = sys.argv[1], sys.argv[2:]
+    extras = []
+    if "--features" in resto:
+        i = resto.index("--features")
+        extras = [f for f in resto[i + 1].split(",") if f]
+        del resto[i:i + 2]
     if comando in ("diag", "release"):
-        return construir(comando)
+        return construir(comando, extras)
     if comando == "testar":
         return testar(resto)
     if comando == "clippy":
@@ -273,8 +280,8 @@ def main() -> int:
         return status()
     if comando == "artefato":
         perfil = resto[0] if resto else "diag"
-        alvo = artefato(perfil)
-        if not alvo.exists() and construir(perfil):
+        alvo = artefato(perfil, extras)
+        if not alvo.exists() and construir(perfil, extras):
             return 1
         print(alvo)
         return 0
