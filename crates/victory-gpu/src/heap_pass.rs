@@ -29,16 +29,15 @@ pub(crate) const FULL_EVERY: u64 = 256;
 /// two looks at every slot with the old pass).
 pub(crate) const ORPHANS_EVERY: u64 = 16;
 
-/// What `VICTORY_HEAP_PASS_MARKED` says: 0 unset (off), 1 on, 2 in turn.
+/// What `VICTORY_HEAP_PASS_MARKED` says: 0 unset (off), 1 on, 2 in turn
+/// (`alt` or `SPARK_AB`, [`crate::switches`]).
 fn mode() -> u8 {
-    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    *MODE.get_or_init(
-        || match std::env::var("VICTORY_HEAP_PASS_MARKED").as_deref() {
-            Ok("1") => 1,
-            Ok("alt") => 2,
-            _ => 0,
-        },
-    )
+    let switch = &crate::switches::HEAP_PASS_MARKED;
+    if switch.alternates() {
+        2
+    } else {
+        u8::from(switch.on())
+    }
 }
 
 /// Whether the switch is set at all (`1` or `alt`): the table entries freed
@@ -68,23 +67,16 @@ pub(crate) fn marked_paused() -> bool {
 
 /// Whether the pass over the heap's buffer views looks only at marked
 /// slots now (`VICTORY_HEAP_PASS_MARKED=1`; off by default: every slot
-/// every 16 passes, as before). `alt`: twenty seconds with, twenty without,
-/// in turn, each change said in the log; the first pass of each turn looks
-/// at every slot.
+/// every 16 passes, as before). In turn with the run's other alternating
+/// switches (`alt` or `SPARK_AB`), each change said in the log; the first
+/// pass of each turn looks at every slot.
 pub(crate) fn marked() -> bool {
     match mode() {
         0 => false,
         1 => true,
         _ => {
             use std::sync::atomic::Ordering::Relaxed;
-            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
+            let on = crate::switches::HEAP_PASS_MARKED.on();
             static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
             if LAST.swap(u8::from(on), Relaxed) != u8::from(on) {
                 if on {
@@ -93,7 +85,7 @@ pub(crate) fn marked() -> bool {
                     PAUSED.store(true, Relaxed);
                 }
                 tracing::info!(
-                    "the pass over the heap's buffer views looks only at marked slots from now (VICTORY_HEAP_PASS_MARKED=alt): {}",
+                    "the pass over the heap's buffer views looks only at marked slots from now (VICTORY_HEAP_PASS_MARKED in turn): {}",
                     if on {
                         "ON"
                     } else {

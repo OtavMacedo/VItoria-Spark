@@ -100,46 +100,22 @@ static PRESENTS_HELD: AtomicU64 = AtomicU64::new(0);
 /// across the title's present. On the console the card reads that memory
 /// when it runs the list, after the present call has returned.
 ///
-/// `VICTORY_ASYNC_PRESENT=alt`: twenty seconds with, twenty without, in
-/// turn, each change said in the log, for measuring it in one scene.
+/// It may alternate inside a run (`SPARK_AB`): a present that is not sent
+/// behind runs the line itself first, so the two kinds may follow each other.
 #[cfg(windows)]
 fn present_behind() -> bool {
-    /// 0 off, 1 on, 2 in turn.
-    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    let mode = *MODE.get_or_init(|| {
-        let asked = match std::env::var("VICTORY_ASYNC_PRESENT").as_deref() {
-            Ok("1") => 1,
-            Ok("alt") => 2,
-            _ => 0,
-        };
-        let mode = if asked != 0 && behind() && crate::host::late_free_present() { asked } else { 0 };
-        if mode != 0 {
-            tracing::info!("presents go behind the queue's line and return at once (VICTORY_ASYNC_PRESENT=1; alt: in turn)");
+    static ABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let able = *ABLE.get_or_init(|| {
+        let able =
+            crate::switches::ASYNC_PRESENT.ever() && behind() && crate::host::late_free_present();
+        if able {
+            tracing::info!(
+                "presents go behind the queue's line and return at once (VICTORY_ASYNC_PRESENT=1)"
+            );
         }
-        mode
+        able
     });
-    match mode {
-        0 => false,
-        1 => true,
-        _ => {
-            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
-            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
-            if LAST.swap(u8::from(on), Ordering::Relaxed) != u8::from(on) {
-                tracing::info!(
-                    "presents behind the line from now (VICTORY_ASYNC_PRESENT=alt): {}",
-                    if on { "ON" } else { "off, as usual" }
-                );
-            }
-            on
-        }
-    }
+    able && crate::switches::ASYNC_PRESENT.on()
 }
 
 /// With [`present_behind`]: puts the present of the next frame behind what

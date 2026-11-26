@@ -1523,6 +1523,54 @@ fn readable(at: usize, len: usize, all: bool) -> (usize, usize) {
     (there, of)
 }
 
+/// The bytes of `[start, end)` (`start < end`) in blocks of `block` bytes
+/// whose first byte in the range can be read: what the walk of
+/// [`mapped_bytes`] counts, with the blocks' pages asked of the kernel up to
+/// 256 in one query instead of one query a block (a 16 MiB texture is 256
+/// blocks, and thousands of slots are asked about a frame). A page the
+/// query says is not in the working set is read through the kernel, as
+/// [`readable`] does (`VICTORY_MAPPED_BATCH=1`; off by default).
+fn blocks_there(start: usize, end: usize, block: usize) -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32QueryWorkingSetEx, PSAPI_WORKING_SET_EX_INFORMATION,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    const ASKED: usize = 256;
+    let mut there = 0u64;
+    let mut at = start & !(block - 1);
+    // SAFETY: plain data.
+    let mut info: [PSAPI_WORKING_SET_EX_INFORMATION; ASKED] = unsafe { std::mem::zeroed() };
+    let mut ranges = [(0usize, 0usize); ASKED];
+    while at < end {
+        let mut n = 0;
+        while n < ASKED && at < end {
+            let (lo, hi) = (at.max(start), at.saturating_add(block).min(end));
+            ranges[n] = (lo, hi);
+            info[n].VirtualAddress = (lo & !4095) as *mut _;
+            n += 1;
+            at = at.saturating_add(block);
+        }
+        // SAFETY: `n` entries of the size given; our own process.
+        let asked = unsafe {
+            K32QueryWorkingSetEx(
+                GetCurrentProcess(),
+                info.as_mut_ptr().cast(),
+                (n * size_of::<PSAPI_WORKING_SET_EX_INFORMATION>()) as u32,
+            )
+        } != 0;
+        for (entry, &(lo, hi)) in info[..n].iter().zip(&ranges[..n]) {
+            // Bit 0 of the answer: the page is in the working set.
+            // SAFETY: plain data the query filled in.
+            let valid = asked && unsafe { entry.VirtualAttributes.Flags } & 1 != 0;
+            let mut byte = [0u8];
+            if valid || crate::host::read_into((lo & !4095) as *const u8, &mut byte) {
+                there += (hi - lo) as u64;
+            }
+        }
+    }
+    there
+}
+
 fn committed_by_query(at: *const u8, len: usize) -> bool {
     use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEMORY_BASIC_INFORMATION, VirtualQuery};
     let mut p = at as usize;
@@ -1574,6 +1622,9 @@ pub(crate) fn mapped_bytes(at: *const u8, len: usize) -> u64 {
         // textures "uploaded in part" kept the pass over the heap's views at
         // 90-160 ms a frame (run 81). `VICTORY_MAPPED_BY_PAGE=1`: by page.
         const BLOCK: usize = 64 << 10;
+        if crate::switches::MAPPED_BATCH.on() {
+            return blocks_there(start, end, BLOCK);
+        }
         let mut there = 0u64;
         let mut block = start & !(BLOCK - 1);
         while block < end {

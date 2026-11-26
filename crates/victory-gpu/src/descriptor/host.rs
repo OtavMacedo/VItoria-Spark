@@ -33,38 +33,10 @@ const KEPT_PIECES: u32 = 64;
 /// Without it: every `mirror` takes the slots' lock, and every `keep`
 /// stands in one line (`kept_one`) across the letting go, as before.
 ///
-/// `alt`: twenty seconds with, twenty without, in turn, each change said
-/// in the log.
+/// It may alternate inside a run (`SPARK_AB`): `made_now` is kept under
+/// the lock either way, and each call decides on its own.
 fn heap_locks() -> bool {
-    use std::sync::atomic::Ordering::Relaxed;
-    /// 0 off, 1 on, 2 in turn.
-    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    match *MODE.get_or_init(|| match std::env::var("VICTORY_HEAP_LOCKS").as_deref() {
-        Ok("1") => 1,
-        Ok("alt") => 2,
-        _ => 0,
-    }) {
-        0 => false,
-        1 => true,
-        _ => {
-            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
-            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
-            if LAST.swap(u8::from(on), Relaxed) != u8::from(on) {
-                tracing::info!(
-                    "the host heap's slots are found made without their lock, and kept without the one line, from now (VICTORY_HEAP_LOCKS=alt): {}",
-                    if on { "ON" } else { "off, both locks as usual" }
-                );
-            }
-            on
-        }
-    }
+    crate::switches::HEAP_LOCKS.on()
 }
 
 pub(crate) struct HostHeap {

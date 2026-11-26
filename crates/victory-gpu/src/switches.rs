@@ -30,6 +30,18 @@ pub(crate) static WIDE_MERGE: Toggle = Toggle::flag("VICTORY_WIDE_MERGE");
 /// whether its refreshes go to the helper threads.
 pub(crate) static WIDE_REFRESH: Toggle = Toggle::flag("VICTORY_WIDE_REFRESH");
 
+/// `VICTORY_MAPPED_BATCH` (`crate::texture`).
+pub(crate) static MAPPED_BATCH: Toggle = Toggle::flag("VICTORY_MAPPED_BATCH");
+
+/// `VICTORY_HEAP_PASS_MARKED` (`crate::heap_pass`; each change of arm starts the pass anew).
+pub(crate) static HEAP_PASS_MARKED: Toggle = Toggle::flag("VICTORY_HEAP_PASS_MARKED");
+
+/// `VICTORY_HEAP_LOCKS` (`crate::descriptor::host`).
+pub(crate) static HEAP_LOCKS: Toggle = Toggle::flag("VICTORY_HEAP_LOCKS");
+
+/// `VICTORY_ASYNC_PRESENT` (`crate::queue`).
+pub(crate) static ASYNC_PRESENT: Toggle = Toggle::flag("VICTORY_ASYNC_PRESENT");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -52,7 +64,27 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 8] = [
+pub static TABLE: [Entry; 12] = [
+    Entry {
+        toggle: &ASYNC_PRESENT,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &HEAP_LOCKS,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &HEAP_PASS_MARKED,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &MAPPED_BATCH,
+        part: "preparo",
+        inert: &[],
+    },
     Entry {
         toggle: &CARD_SYNC_BATCH,
         part: "copias",
