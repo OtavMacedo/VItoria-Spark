@@ -68,3 +68,21 @@ cargo xtask policy
 
 O foco do projeto é **desempenho e imagem correta**. Mudanças que dependem do nome de um título ou de um endereço de um
 título específico não entram no motor, com exceção dos hooks por build descritos na política de arquivos.
+
+## 7. NVIDIA, AMD e Intel juntas
+
+O projeto recebe melhorias para todas as placas ao mesmo tempo, e cada fabricante tem o seu espaço:
+
+- **Ajustes por fabricante:** `perfis/comum.toml` vale para todas as placas; `perfis/nvidia.toml`, `perfis/amd.toml`
+  e `perfis/intel.toml` valem só para a placa daquele fabricante e substituem o comum. Na inicialização, o Spark
+  detecta a placa e aplica os dois. A variável que a pessoa definiu sempre vence, e `SPARK_PERFIL=0` desliga tudo.
+- **Toda entrada em um perfil** diz, num comentário, a placa, o driver e a medição que a justifica. Para entrar em
+  `comum.toml`, precisa de medição sem regressão em pelo menos um fabricante e de nenhuma regressão conhecida em
+  outro.
+- **Código que depende do fabricante** consulta `victory_gpu::vendor` ou as capacidades da placa (largura de onda,
+  heaps, formatos), nunca o nome do modelo. Comportamento específico começa desligado e é ligado pelo perfil do
+  fabricante.
+- **Mudança em código comum** declara em que placa foi testada (modelos de issue e de PR). Quem tem a outra placa
+  confirma nos comentários. A revisão pede essa confirmação quando houver risco para o outro fabricante.
+- **Rótulos:** `nvidia`, `amd`, `intel` e `todas-as-placas`. Issues e PRs levam o rótulo da placa em que o problema
+  ou a medição aconteceu.

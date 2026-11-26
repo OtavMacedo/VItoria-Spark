@@ -1,0 +1,4 @@
+# Ajustes só para placas Intel (VendorId 0x8086), aplicados depois de comum.toml.
+# Toda entrada nova diz em comentário a placa, o driver e a medição que a justifica.
+
+[ajustes]

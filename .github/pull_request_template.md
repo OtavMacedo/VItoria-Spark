@@ -13,6 +13,9 @@ Fecha #
 
 GPU e driver · resolução · CPU · RAM
 
+Testado em: - [ ] NVIDIA - [ ] AMD - [ ] Intel. Se mudar código comum ou `perfis/comum.toml`, diga o risco para as
+placas em que não foi testado.
+
 ## Regras
 - [ ] Nada de jogo nem saída de execução (docs/asset-policy.md)
 - [ ] Comentários conforme CONTRIBUTING.md (regra 5)

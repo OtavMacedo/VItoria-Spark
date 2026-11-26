@@ -1,0 +1,5 @@
+# Ajustes só para placas AMD (VendorId 0x1002), aplicados depois de comum.toml.
+# Contexto: RDNA roda ondas de 64 lanes nativamente, como o console.
+# Toda entrada nova diz em comentário a placa, o driver e a medição que a justifica.
+
+[ajustes]

@@ -1,0 +1,15 @@
+# Ajustes de todas as placas, aplicados na inicialização antes do perfil do fabricante.
+# Uma variável já definida no ambiente sempre vence. SPARK_PERFIL=0 desliga os perfis.
+# Só entra aqui o que foi medido sem regressão (CONTRIBUTING.md, regra 3) e não depende do fabricante.
+
+[ajustes]
+VICTORY_ASYNC_SUBMIT = "1"
+VICTORY_QUEUE2 = "1"
+VICTORY_TEXTURE_NO_WAIT = "1"
+VICTORY_INDIRECT_WINDOW = "1"
+VICTORY_TEXTURE_BACK = "1"
+VICTORY_HEAP_WORKER = "1"
+VICTORY_PARALLEL_REFRESH = "1"
+VICTORY_SETTLE_ROOM = "1"
+VICTORY_LOOKUP_CACHE = "1"
+VICTORY_NO_WATCHDOG = "1"

@@ -12,6 +12,8 @@ pub fn run(
     execute: bool,
     console: Console,
 ) -> Result<()> {
+    // The card maker's settings (perfis/), before anything reads a setting.
+    let profile = victory_gpu::vendor::apply();
     // The session log (logs/<time>-<pid>/): eventos.jsonl and the summary.
     victory_core::session::start(
         victory_core::session::BuildInfo {
@@ -27,6 +29,7 @@ pub fn run(
         },
         exe.parent(),
     );
+    profile.log();
     let result = run_title(exe, unimplemented, strict, execute, console);
     victory_core::session::finish(&match &result {
         Ok(()) => "o executor terminou".to_owned(),

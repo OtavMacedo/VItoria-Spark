@@ -54,6 +54,19 @@ que contorne proteção de cópia; no máximo 3 issues e 1 PR por sessão. O cic
 
 ## Desempenho medido
 
+### Por fabricante
+
+| Placa | Mediana no mundo | Picos | Cena | Situação |
+|---|---|---|---|---|
+| **NVIDIA** RTX 3060 12 GB | 3,2–3,6 fps | 6,4 fps | pesada, ~4.750 desenhos/quadro | medido (2 sessões de 9 min) |
+| **AMD** | — | — | — | aguardando medição: [contribua](#-autopilot-mode) |
+| **Intel** | — | — | — | aguardando medição |
+
+Cada fabricante tem o seu perfil de ajustes em [`perfis/`](perfis), aplicado automaticamente pela placa detectada
+(regras em [CONTRIBUTING.md](CONTRIBUTING.md#7-nvidia-amd-e-intel-juntas)).
+
+### Evidência para o PortWatch
+
 Evidência pública para o [PortWatch VI](https://portwatch-vi.xyz/). São dados do próprio projeto, medidos em
 2026-11-26.
 

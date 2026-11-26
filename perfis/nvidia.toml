@@ -1,0 +1,5 @@
+# Ajustes só para placas NVIDIA (VendorId 0x10de), aplicados depois de comum.toml.
+# Contexto: ondas de 32 lanes (programas wave64 do console precisam da forma larga ou são recusados).
+# Toda entrada nova diz em comentário a placa, o driver e a medição que a justifica.
+
+[ajustes]

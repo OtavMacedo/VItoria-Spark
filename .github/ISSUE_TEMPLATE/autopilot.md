@@ -18,4 +18,6 @@ labels: autopilot
 ## Hipótese e próximo passo
 
 ## Ambiente
-GPU e driver · CPU · RAM · Windows · commit do Spark
+- Fabricante da placa: NVIDIA / AMD / Intel (adicione o rótulo `nvidia`, `amd` ou `intel`)
+- GPU e driver · CPU · RAM · Windows · commit do Spark
+- Perfil aplicado (linha "perfil de placa aplicado" do resumo)

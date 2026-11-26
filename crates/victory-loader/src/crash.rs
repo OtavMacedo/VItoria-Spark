@@ -74,8 +74,11 @@ pub fn log_crashes_to(file: std::path::PathBuf) {
 pub fn log_crash(text: &str) {
     let failure = text.trim().trim_start_matches("VIctory: ");
     let (what, detail) = failure.split_once(": ").unwrap_or(("failure", failure));
-    let text = format!("{text}
-{}", title_output());
+    let text = format!(
+        "{text}
+{}",
+        title_output()
+    );
     eprint!("{text}");
     append_to_log(&text);
     victory_core::session::crash(victory_core::session::Crash {

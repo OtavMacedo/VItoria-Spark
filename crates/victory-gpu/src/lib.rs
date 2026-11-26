@@ -92,6 +92,7 @@ mod texback;
 mod texture;
 #[cfg(windows)]
 mod tiles;
+pub mod vendor;
 #[cfg(windows)]
 mod watch;
 
