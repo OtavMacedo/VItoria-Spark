@@ -850,7 +850,19 @@ impl HostPipeline {
             let pso = match made {
                 Ok(pso) => pso,
                 Err(e) => {
-                    tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host pipeline refused");
+                    let dxil = stages.first().and_then(|(s, _)| s.translated());
+                    let cause = dxil
+                        .and_then(|t| {
+                            refusal_cause(&t.host.dxil, victory_shader::emit::host_wave_lanes())
+                        })
+                        .unwrap_or_default();
+                    tracing::warn!(
+                        spark.kind = "pipeline_refused",
+                        error = %e,
+                        cause = %cause,
+                        ?shaders,
+                        "host pipeline refused"
+                    );
                     host.log_messages();
                     return None;
                 }
@@ -2207,5 +2219,65 @@ mod tests {
             "records past the budget"
         );
         assert_eq!(((1u64 << 27) / (65_535 * 128)), 16);
+    }
+}
+
+/// Why the card would refuse a program, when its DXIL says so: a fixed wave size (the lane
+/// counts in `PSV0`'s runtime info, bytes 16..24 after its size word) above the most lanes
+/// a wave has on this card (`host`, 0 when not known). `None` when the container does not tell
+/// or the card could run it.
+fn refusal_cause(dxil: &[u8], host: u32) -> Option<String> {
+    let container = victory_shader::Container::parse(dxil).ok()?;
+    let psv = container.part(victory_shader::FourCC::PSV0)?.data;
+    let lanes = |at: usize| {
+        psv.get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_le_bytes)
+    };
+    let (min, max) = (lanes(4 + 16)?, lanes(4 + 20)?);
+    (host != 0 && min > host).then(|| {
+        format!(
+            "the program needs waves of {min} to {max} lanes and this card's have at most {host}; \
+             VICTORY_WAVE_WIDE_ONLY lists the programs allowed the wave-wide form"
+        )
+    })
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use victory_shader::FourCC;
+
+    fn container(min: u32, max: u32) -> Vec<u8> {
+        let mut psv = 48u32.to_le_bytes().to_vec();
+        let mut info = [0u8; 48];
+        info[16..20].copy_from_slice(&min.to_le_bytes());
+        info[20..24].copy_from_slice(&max.to_le_bytes());
+        psv.extend(info);
+        // A container of that one part: header, one part offset, the part.
+        let mut c = b"DXBC".to_vec();
+        c.extend([0u8; 16]);
+        c.extend([1u8, 0, 0, 0]);
+        let total = 32 + 4 + 8 + psv.len();
+        c.extend((total as u32).to_le_bytes());
+        c.extend(1u32.to_le_bytes());
+        c.extend(36u32.to_le_bytes());
+        c.extend(FourCC::PSV0.0);
+        c.extend((psv.len() as u32).to_le_bytes());
+        c.extend(psv);
+        c
+    }
+
+    #[test]
+    fn a_wave_size_above_the_card_is_named() {
+        let why = super::refusal_cause(&container(64, 64), 32).expect("a cause");
+        assert!(
+            why.contains("64 to 64 lanes") && why.contains("at most 32"),
+            "{why}"
+        );
+        assert_eq!(super::refusal_cause(&container(64, 64), 64), None);
+        assert_eq!(super::refusal_cause(&container(64, 64), 0), None);
+        assert_eq!(super::refusal_cause(&container(32, 32), 32), None);
+        assert_eq!(super::refusal_cause(&container(0, u32::MAX), 32), None);
+        assert_eq!(super::refusal_cause(b"not a container", 32), None);
     }
 }

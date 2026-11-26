@@ -502,10 +502,14 @@ impl Summary {
                     .text("shaders")
                     .or_else(|| e.text("hash"))
                     .unwrap_or_default();
-                let why = e.text("error").map_or_else(
+                let mut why = e.text("error").map_or_else(
                     || e.message.to_owned(),
                     |err| format!("{}: {err}", e.message),
                 );
+                // The cause the host found in the program, when it found one.
+                if let Some(cause) = e.text("cause").filter(|c| !c.is_empty()) {
+                    why = format!("{why} ({cause})");
+                }
                 self.refused.add(&key, now_s, |r| r.detail = why);
             }
             Some("shader_untranslated") => {

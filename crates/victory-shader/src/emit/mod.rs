@@ -112,6 +112,12 @@ use crate::{ShaderError, io, ir, resource, structure};
 
 pub use bitcode::census;
 pub use lower::set_host_max_wave;
+
+/// The most lanes a wave has on the host card (`WaveLaneCountMax`), or 0 before the device
+/// is made.
+pub fn host_wave_lanes() -> u32 {
+    lower::host_max_wave()
+}
 pub use rect::rect_list_gs;
 pub use sampler::StaticSampler;
 pub use shader::{
