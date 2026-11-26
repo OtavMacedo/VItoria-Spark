@@ -1532,20 +1532,51 @@ fn pooled(n: usize) -> Vec<u8> {
     v
 }
 
-/// Returns a snapshot buffer to the pool: at most 8 kept, the largest, and
-/// of those the largest one and the next ones up to `KEPT` bytes in all.
+/// How many snapshot buffers the pool keeps (`VICTORY_SNAPSHOT_POOL`; unset
+/// or invalid: 8).
+///
+/// A frame hands hundreds of copies' ranges to shaders and most copies have a
+/// snapshot of their own. With a few frames in the air the eight buffers kept
+/// are the eight largest, so every smaller snapshot is fresh memory from the
+/// kernel, given back to it, and its pages fault again when filled.
+fn snapshots_kept() -> usize {
+    static MOST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_SNAPSHOT_POOL")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(8)
+    })
+}
+
+/// How many of `capacities` (largest first) the pool keeps: at most `most`,
+/// and of those the first one and the next ones up to `bytes` in all.
+fn kept_count(capacities: impl Iterator<Item = usize>, most: usize, bytes: usize) -> usize {
+    let (mut kept, mut total) = (0, 0usize);
+    for capacity in capacities.take(most) {
+        total = total.saturating_add(capacity);
+        if kept > 0 && total > bytes {
+            break;
+        }
+        kept += 1;
+    }
+    kept
+}
+
+/// Returns a snapshot buffer to the pool: at most [`snapshots_kept`] kept,
+/// the largest, and of those the largest one and the next ones up to `KEPT`
+/// bytes in all.
 fn give_back(v: Vec<u8>) {
     const KEPT: usize = 512 << 20;
     let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
     pool.push(v);
     pool.sort_by_key(|v| std::cmp::Reverse(v.capacity()));
-    pool.truncate(8);
-    let (mut seen, mut total) = (0, 0usize);
-    pool.retain(|v| {
-        seen += 1;
-        total = total.saturating_add(v.capacity());
-        seen == 1 || total <= KEPT
-    });
+    let kept = kept_count(pool.iter().map(Vec::capacity), snapshots_kept(), KEPT);
+    // Returned to the kernel with the lock released: unmapping big buffers
+    // takes milliseconds.
+    let gone = pool.split_off(kept);
+    drop(pool);
+    drop(gone);
 }
 
 const NOT_WATCHED: u8 = 2;
@@ -5903,4 +5934,20 @@ pub(crate) fn near(va: u64) -> String {
         ));
     }
     text
+}
+
+#[cfg(test)]
+mod snapshot_pool_tests {
+    use super::kept_count;
+
+    #[test]
+    fn keeps_at_most_the_count_and_the_byte_budget() {
+        let sizes = [400usize, 300, 200, 100, 50];
+        assert_eq!(kept_count(sizes.iter().copied(), 8, 10_000), 5);
+        assert_eq!(kept_count(sizes.iter().copied(), 3, 10_000), 3);
+        // The first stays however large; the rest only while the total fits.
+        assert_eq!(kept_count(sizes.iter().copied(), 8, 100), 1);
+        assert_eq!(kept_count(sizes.iter().copied(), 8, 700), 2);
+        assert_eq!(kept_count(std::iter::empty(), 8, 100), 0);
+    }
 }
