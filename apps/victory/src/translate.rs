@@ -657,6 +657,9 @@ fn census_line(label: &str, native: &NativeProgram, p: &ir::Program, shader: &em
     for (name, n) in emit::census::KINDS.iter().zip(census.counts) {
         line.push_str(&format!("\t{name}={n}"));
     }
+    for (name, n) in &census.detail {
+        line.push_str(&format!("\td:{name}={n}"));
+    }
     line.push('\n');
     let _ = lock(out).write_all(line.as_bytes());
 }

@@ -42,6 +42,9 @@ pub const KINDS: [&str; 26] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Census {
     pub counts: [u32; KINDS.len()],
+    /// Instructions by opcode, operand type and `dx.op` number: where a
+    /// stage's count goes, finer than `counts`.
+    pub detail: std::collections::BTreeMap<String, u32>,
 }
 
 thread_local! {
@@ -113,6 +116,62 @@ fn kind(name: &str) -> usize {
 }
 
 impl Module {
+    /// A short name of type `t` for [`Module::detail_key`].
+    fn ty_name(&self, t: super::Ty) -> String {
+        use super::TypeDef as T;
+        match &self.types[t.0 as usize] {
+            T::Void => "void".into(),
+            T::Int(b) => format!("i{b}"),
+            T::Float => "f32".into(),
+            T::Double => "f64".into(),
+            T::Ptr(_, s) => format!("p{s}"),
+            T::Struct(n, _) => n.clone().unwrap_or_else(|| "struct".into()),
+            T::Array(..) => "arr".into(),
+            T::Func(..) => "fn".into(),
+        }
+    }
+
+    /// What [`Census::detail`] counts instruction `i` as: its opcode with
+    /// the type it works on (a `k` after it: one operand is a constant), a
+    /// call by its function's name and `dx.op` number, and what the
+    /// lowering tagged it as.
+    fn detail_key(&self, i: u32) -> String {
+        let inst = &self.insts[i as usize];
+        let tag = match self.tags.get(&i) {
+            Some(Tag::Guard) => "@guard",
+            Some(Tag::Clamp) => "@clamp",
+            Some(Tag::Counter) => "@counter",
+            None => "",
+        };
+        let ty = self.ty_name(inst.ty);
+        let k = match &inst.op {
+            Op::Bin(op, a, b) => {
+                let c = if matches!(a, V::Const(_)) || matches!(b, V::Const(_)) {
+                    "k"
+                } else {
+                    ""
+                };
+                format!("bin.{op:?}.{ty}{c}")
+            }
+            Op::Cast(c, v) => format!("cast.{c:?}.{}.{ty}", self.ty_name(self.type_of(*v))),
+            Op::Cmp(p, a, _) => format!("cmp.{p}.{}", self.ty_name(self.type_of(*a))),
+            Op::Select(..) => format!("select.{ty}"),
+            Op::Extract(..) => format!("extract.{ty}"),
+            Op::Phi(_) => format!("phi.{ty}"),
+            Op::Gep(_, p, _) => format!("gep.{}", self.ty_name(self.type_of(*p))),
+            Op::Load(p) => format!("load.{}", self.ty_name(self.type_of(*p))),
+            Op::Store(p, _) => format!("store.{}", self.ty_name(self.type_of(*p))),
+            Op::AtomicRmw(..) => "atomicrmw".into(),
+            Op::CmpXchg(..) => "cmpxchg".into(),
+            Op::Call(f, args) => {
+                let n = &self.funcs[*f as usize].name;
+                let opc = args.first().and_then(|a| self.int_value(*a)).unwrap_or(-1);
+                format!("call.{n}#{opc}")
+            }
+        };
+        format!("{k}{tag}")
+    }
+
     /// The instructions [`Module::write`] writes, by kind.
     pub(crate) fn census(&self) -> Census {
         let k = |s: &str| KINDS.iter().position(|k| *k == s).expect("kind");
@@ -167,6 +226,7 @@ impl Module {
                     None => {}
                 }
                 let _ = V::Inst(i);
+                *c.detail.entry(self.detail_key(i)).or_default() += 1;
             }
         }
         c
