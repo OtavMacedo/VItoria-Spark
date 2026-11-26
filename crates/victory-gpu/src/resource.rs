@@ -3546,6 +3546,110 @@ mod tests {
         );
     }
 
+    /// With uploads in the prelude (`crate::texture::in_prelude`), a list
+    /// recorded before the title wrote a texture it samples reads the new
+    /// texels when it is submitted: the check at submission detiles them and
+    /// the list's own prelude uploads them.
+    #[cfg(windows)]
+    #[test]
+    fn a_prelude_upload_holds_what_the_title_wrote_after_the_recording() {
+        use windows::Win32::Graphics::Direct3D12::*;
+        let Some(host) = crate::host::host() else {
+            return; // no host GPU here
+        };
+        let null = std::ptr::null();
+        let desc = texture(4, 4, 28, 1);
+        let mut title = null;
+        assert_eq!(
+            create_committed(
+                null,
+                &PROPERTIES,
+                0,
+                &desc,
+                0,
+                null.cast(),
+                &RESOURCE_IIDS[0],
+                &mut title
+            ),
+            S_OK
+        );
+        let bytes = footprint(&desc).unwrap().size as usize;
+        // Every texel the same: the test does not depend on the tiling.
+        let fill = |texel: u32| {
+            // SAFETY: the texture's own title memory, `bytes` long.
+            let memory = unsafe { std::slice::from_raw_parts_mut(resource(title).data(), bytes) };
+            for chunk in memory.chunks_exact_mut(4) {
+                chunk.copy_from_slice(&texel.to_le_bytes());
+            }
+        };
+        let sampled = host_resource(title).unwrap();
+        // A list that samples the texture and reads its first texel back.
+        let record = || {
+            let list = host.new_list().unwrap();
+            let readback = host.read_back_buffer(1024).unwrap();
+            crate::texture::upload(&list, title, sampled);
+            crate::list::ensure_state(&list, title, D3D12_RESOURCE_STATE_COPY_SOURCE.0 as u32);
+            let from = D3D12_TEXTURE_COPY_LOCATION {
+                // SAFETY: a borrowed pointer the location never releases.
+                pResource: unsafe { std::mem::transmute_copy(sampled) },
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            };
+            let to = D3D12_TEXTURE_COPY_LOCATION {
+                // SAFETY: as above.
+                pResource: unsafe { std::mem::transmute_copy(&readback) },
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                        Offset: 0,
+                        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                            // SAFETY: a live resource.
+                            Format: unsafe { sampled.GetDesc() }.Format,
+                            Width: 4,
+                            Height: 4,
+                            Depth: 1,
+                            RowPitch: 256,
+                        },
+                    },
+                },
+            };
+            // SAFETY: an open list and live resources; four rows of 256
+            // bytes fit the buffer.
+            unsafe { list.list.CopyTextureRegion(&to, 0, 0, 0, &from, None) };
+            list.close();
+            (list, readback)
+        };
+        let first_texel = |readback: &ID3D12Resource| {
+            let mut mapped = std::ptr::null_mut();
+            // SAFETY: the copy finished (execute waits); the buffer holds
+            // at least one 32-bit texel.
+            unsafe {
+                readback.Map(0, None, Some(&mut mapped)).unwrap();
+                let texel = mapped.cast::<u32>().read_unaligned();
+                readback.Unmap(0, None);
+                texel
+            }
+        };
+        crate::texture::set_in_prelude(true);
+        let (old, new) = (0x1122_3344_u32, 0x5566_7788_u32);
+        fill(old);
+        let (list, readback) = record();
+        host.execute(&[&list]);
+        let first = first_texel(&readback);
+        // Recorded while the card holds the old texels, submitted after
+        // the title wrote the new ones.
+        let (list, readback) = record();
+        fill(new);
+        host.execute(&[&list]);
+        let second = first_texel(&readback);
+        crate::texture::set_in_prelude(false);
+        resource_release(title);
+        assert_eq!(first, old, "the first upload");
+        assert_eq!(second, new, "the upload after the title's write");
+    }
+
     /// A 16-bit depth texture the title also asks unordered access for gets
     /// a colour twin, and the host copies one into the other, both ways: a
     /// pattern put into the twin is copied to the depth texture, the twin

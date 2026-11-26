@@ -3011,6 +3011,9 @@ struct Deferred {
     filled: std::collections::HashMap<(usize, usize), u64>,
     /// Textures whose contents the list brings up to date.
     textures: std::collections::HashSet<usize>,
+    /// With `crate::texture::in_prelude`: the title-written textures the
+    /// list samples, uploaded by its prelude if a check found them changed.
+    prelude_uploads: Vec<std::sync::Arc<crate::texture::PreludeUpload>>,
     /// Last GPU source copied into each aliased host texture in this list.
     texture_aliases: std::collections::HashMap<usize, usize>,
     /// Bottom-of-pipe writes, done once the list has run: address, what,
@@ -3747,6 +3750,7 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
 /// there, over every fill that read ahead of them) and from then on fills
 /// wait as before. `VICTORY_FILL_WAIT=1`: they wait from the start.
 mod fill_ahead;
+mod uploads;
 
 pub(crate) use fill_ahead::wrote as shaders_write;
 
@@ -7133,8 +7137,9 @@ impl Host {
         part = prep_part(0, part);
         for list in runs {
             list.run_deferred(&mut batch);
+            let uploads = list.claim_uploads(&mut batch);
             firsts.push(lists.len());
-            if let Some(prelude) = list.prelude() {
+            if let Some(prelude) = list.prelude(&uploads) {
                 lists.push(Some(prelude));
             }
             lists.push(list.list.cast().ok());
@@ -8329,8 +8334,13 @@ impl HostList {
     /// its real state to the one the list starts with; the textures' real
     /// states become those the list ends with. For depth textures with a
     /// colour twin it first copies the side the list uses as it finds it
-    /// from the other, if a list submitted earlier left it behind.
-    fn prelude(&self) -> Option<ID3D12CommandList> {
+    /// from the other, if a list submitted earlier left it behind. Then it
+    /// copies the staging buffers of `uploads` into their textures
+    /// ([`HostList::claim_uploads`]).
+    fn prelude(
+        &self,
+        uploads: &[std::sync::Arc<crate::texture::PreludeUpload>],
+    ) -> Option<ID3D12CommandList> {
         const COPY_DEST: u32 = 0x400;
         const COPY_SOURCE: u32 = 0x800;
         let host_state = |state: u32| D3D12_RESOURCE_STATES(state as i32);
@@ -8385,6 +8395,13 @@ impl HostList {
                 }
             }
         }
+        uploads::moves(
+            uploads,
+            |key| states.contains_key(&key),
+            &mut copying,
+            &mut to_copy,
+            &mut barriers,
+        );
         // A frame shot copies the textures that leave a state shaders write
         // in between lists, each before the moves below and left in the
         // state it was found in.
@@ -8411,7 +8428,7 @@ impl HostList {
         // The records the list's draws read from slots (`crate::indirect::gather`).
         let gather = self.gather.lock().unwrap_or_else(|e| e.into_inner());
         let gathered = gather.sets.iter().any(|s| s.records() > 0);
-        if barriers.is_empty() && syncs.is_empty() && !gathered {
+        if barriers.is_empty() && syncs.is_empty() && !gathered && uploads.is_empty() {
             return None;
         }
         let Some((allocator, list)) = self
@@ -8433,6 +8450,9 @@ impl HostList {
                 }
                 for (depth, twin, colour) in &syncs {
                     record_twin_copy(list, &depth.texture, twin, *colour);
+                }
+                for upload in uploads {
+                    upload.record(list);
                 }
                 #[cfg(feature = "diagnostics")]
                 for (copy, real, first) in &leaving {

@@ -23,6 +23,11 @@ use windows::Win32::Graphics::Direct3D12::*;
 use crate::host::{HostList, host};
 use crate::object::This;
 
+mod prelude;
+#[cfg(test)]
+pub(crate) use prelude::set_in_prelude;
+pub(crate) use prelude::{PreludeUpload, in_prelude};
+
 macro_rules! once {
     ($($arg:tt)*) => {{
         static ONCE: std::sync::Once = std::sync::Once::new();
@@ -738,7 +743,8 @@ pub(crate) fn title_written(texture: &ID3D12Resource) -> bool {
 /// Records, once per list, the copy of `resource`'s staging buffer into
 /// its host copy, and the detiling that refreshes the staging buffer at
 /// submission if the memory changed. Leaves the texture in the copy
-/// destination state.
+/// destination state. With [`in_prelude`] the list records nothing: its
+/// prelude copies at submission, if the detiling found a change.
 pub(crate) fn upload(list: &HostList, resource: This, texture: &ID3D12Resource) {
     let host_written = HOST_WRITTEN
         .lock()
@@ -780,6 +786,19 @@ pub(crate) fn upload(list: &HostList, resource: This, texture: &ID3D12Resource) 
                 staging.waiting.store(crate::host::moment().max(1), Relaxed);
             }
         }
+    }
+    if in_prelude() {
+        // The check at submission says whether this list's prelude uploads.
+        let Some(copy) = crate::resource::host_copy(resource) else {
+            return;
+        };
+        let on_demand = if staging.on_demand {
+            crate::resource::host_tiled(resource)
+        } else {
+            None
+        };
+        list.defer_upload(PreludeUpload::new(staging, copy, on_demand));
+        return;
     }
     // The host texture has the staging buffer's contents: only the check
     // at submission is left, and what it finds changed the next list that
