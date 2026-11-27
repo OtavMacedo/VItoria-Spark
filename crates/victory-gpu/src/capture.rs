@@ -214,10 +214,14 @@ pub(crate) fn wanted(n: u64) -> bool {
 
 /// Saves 8-bit RGBA or BGRA rows (`pitch` bytes apart) as frame `n`; in a
 /// run whose switches alternate (`SPARK_AB`) the name ends in the arm in
-/// force, `-a` or `-b`, so that pictures are compared arm by arm.
+/// force, `-a` or `-b` (`-c<cell>` with more than one factor), so that
+/// pictures are compared arm by arm.
 pub(crate) fn save(n: u64, width: u32, height: u32, pitch: usize, bgra: bool, rows: &[u8]) {
     let name = match victory_core::ab::arm() {
-        Some(arm) => format!("frame-{n}-{}", ["a", "b"][usize::from(arm)]),
+        Some(arm) if victory_core::ab::plan().is_some_and(|p| p.factors > 1) => {
+            format!("frame-{n}-c{arm}")
+        }
+        Some(arm) => format!("frame-{n}-{}", ["a", "b"][usize::from(arm & 1)]),
         None => format!("frame-{n}"),
     };
     save_as(&name, width, height, pitch, bgra, rows);

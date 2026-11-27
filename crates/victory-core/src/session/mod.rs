@@ -181,7 +181,12 @@ fn start_in(base: &Path, build: BuildInfo, game_dir: Option<&Path>) -> Option<Pa
                 env_num("SPARK_STABLE_AFTER_S").unwrap_or(summary::STABLE_AFTER_S),
             );
             for (name, plan) in crate::ab::program().map_or(&[][..], |p| &p.experiments[..]) {
-                summary.ab_plan(name, [plan.label(0), plan.label(1)], plan.period_s);
+                summary.ab_plan(
+                    name,
+                    [plan.label(0), plan.label(1)],
+                    (0..plan.factors).map(|f| plan.factor_label(f)).collect(),
+                    plan.period_s,
+                );
             }
             summary
         }),

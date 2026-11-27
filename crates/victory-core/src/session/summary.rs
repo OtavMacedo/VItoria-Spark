@@ -497,9 +497,17 @@ impl Summary {
 
     /// The run alternates switches: what each arm sets (`NAME=value ...`)
     /// and a block's length in seconds. Before the first frame.
-    pub fn ab_plan(&mut self, name: &str, labels: [String; 2], period_s: f64) {
-        self.ab
-            .push((name.to_owned(), AbStats::new(labels, period_s)));
+    pub fn ab_plan(
+        &mut self,
+        name: &str,
+        labels: [String; 2],
+        factors: Vec<String>,
+        period_s: f64,
+    ) {
+        self.ab.push((
+            name.to_owned(),
+            AbStats::new(labels, period_s).with_factors(factors),
+        ));
     }
 
     /// What makes the scene stable: `draws` a frame or more, from

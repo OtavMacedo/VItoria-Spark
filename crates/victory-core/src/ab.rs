@@ -21,6 +21,13 @@
 //! and 2j+1 are always one of each arm, and a slow drift of the scene
 //! falls on both arms alike.
 //!
+//! `*` between switches makes each side a factor of its own
+//! (`SPARK_AB=NAME*OTHER+THIRD*FOURTH` has three: `OTHER` and `THIRD`
+//! change together). Every block then runs one cell of the factorial, a
+//! level per factor ([`cell_of`]), so one run measures every factor on
+//! all of its blocks and shows whether two of them interact. Up to
+//! [`MAX_FACTORS`].
+//!
 //! `SPARK_PLAN=<file.toml>` runs several experiments, one after the other,
 //! in one run (the title's start and loading paid once):
 //!
@@ -54,6 +61,8 @@ const PERIOD_RANGE_S: (f64, f64) = (2.0, 600.0);
 const SETTLE_SHARE: f64 = 0.1;
 /// The least time left out after a change of arm, seconds.
 const SETTLE_MIN_S: f64 = 1.0;
+/// The most factors of one plan: 32 cells, each seen once in 32 blocks.
+pub const MAX_FACTORS: usize = 5;
 
 /// One switch of a plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +71,8 @@ pub struct Switch {
     pub name: String,
     /// Its value in arm A and in arm B.
     pub values: [String; 2],
+    /// The factor it belongs to (0 in a plan of one).
+    pub factor: u8,
 }
 
 /// What alternates and how fast.
@@ -71,11 +82,13 @@ pub struct Plan {
     pub period_s: f64,
     /// The switches, each with its two values.
     pub switches: Vec<Switch>,
+    /// How many factors the switches make up, 1 to [`MAX_FACTORS`].
+    pub factors: u8,
 }
 
 impl Plan {
-    /// Reads `NAME[=a/b][+NAME[=a/b]...][:seconds]`. The error says what
-    /// is wrong, for the person who wrote the variable.
+    /// Reads `NAME[=a/b][+NAME[=a/b]...][*NAME...][:seconds]`. The error
+    /// says what is wrong, for the person who wrote the variable.
     pub fn parse(spec: &str) -> Result<Plan, String> {
         let spec = spec.trim();
         let (names, period_s) = match spec.rsplit_once(':') {
@@ -95,32 +108,46 @@ impl Plan {
             None => (spec, DEFAULT_PERIOD_S),
         };
         let mut switches = Vec::new();
-        for part in names.split(['+', ',']).map(str::trim) {
-            let (name, values) = match part.split_once('=') {
-                Some((name, values)) => {
-                    let (a, b) = values.split_once('/').ok_or_else(|| {
-                        format!("SPARK_AB: `{part}` needs two values, as in NAME=a/b")
-                    })?;
-                    (name.trim(), [a.trim().to_owned(), b.trim().to_owned()])
+        let mut factors = 0u8;
+        for group in names.split('*') {
+            if usize::from(factors) == MAX_FACTORS {
+                return Err(format!(
+                    "SPARK_AB: more than {MAX_FACTORS} factors (`*`) in one plan"
+                ));
+            }
+            for part in group.split(['+', ',']).map(str::trim) {
+                let (name, values) = match part.split_once('=') {
+                    Some((name, values)) => {
+                        let (a, b) = values.split_once('/').ok_or_else(|| {
+                            format!("SPARK_AB: `{part}` needs two values, as in NAME=a/b")
+                        })?;
+                        (name.trim(), [a.trim().to_owned(), b.trim().to_owned()])
+                    }
+                    None => (part, ["0".to_owned(), "1".to_owned()]),
+                };
+                let well_formed = !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+                if !well_formed {
+                    return Err(format!("SPARK_AB: `{name}` is not a switch's name"));
                 }
-                None => (part, ["0".to_owned(), "1".to_owned()]),
-            };
-            let well_formed = !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
-            if !well_formed {
-                return Err(format!("SPARK_AB: `{name}` is not a switch's name"));
+                if switches.iter().any(|s: &Switch| s.name == name) {
+                    return Err(format!("SPARK_AB: `{name}` is named twice"));
+                }
+                switches.push(Switch {
+                    name: name.to_owned(),
+                    values,
+                    factor: factors,
+                });
             }
-            if switches.iter().any(|s: &Switch| s.name == name) {
-                return Err(format!("SPARK_AB: `{name}` is named twice"));
-            }
-            switches.push(Switch {
-                name: name.to_owned(),
-                values,
-            });
+            factors += 1;
         }
-        Ok(Plan { period_s, switches })
+        Ok(Plan {
+            period_s,
+            switches,
+            factors,
+        })
     }
 
     /// The time left out of the numbers after a change of arm, seconds.
@@ -133,20 +160,48 @@ impl Plan {
         (t_s.max(0.0) / self.period_s) as u32
     }
 
-    /// What arm `arm` (0 or 1) sets, as `NAME=value` joined by spaces.
-    pub fn label(&self, arm: usize) -> String {
+    /// What cell `cell` sets, as `NAME=value` joined by spaces: bit `f`
+    /// of the cell is factor `f`'s level, so in a plan of one factor the
+    /// cell is the arm (0 or 1).
+    pub fn label(&self, cell: usize) -> String {
         let parts: Vec<String> = self
             .switches
             .iter()
-            .map(|s| format!("{}={}", s.name, s.values[arm & 1]))
+            .map(|s| format!("{}={}", s.name, s.values[(cell >> s.factor) & 1]))
             .collect();
         parts.join(" ")
+    }
+
+    /// Factor `factor`'s switches with both values, as `NAME=a/b` joined
+    /// by `+`.
+    pub fn factor_label(&self, factor: u8) -> String {
+        let parts: Vec<String> = self
+            .switches
+            .iter()
+            .filter(|s| s.factor == factor)
+            .map(|s| format!("{}={}/{}", s.name, s.values[0], s.values[1]))
+            .collect();
+        parts.join("+")
+    }
+
+    /// The cell of block `block`.
+    pub fn cell_at(&self, block: u32) -> u8 {
+        cell_of(block, self.factors)
     }
 }
 
 /// The arm (0 or 1) of block `block`: its place in the Thue-Morse sequence.
 pub fn arm_of(block: u32) -> u8 {
     (block.count_ones() & 1) as u8
+}
+
+/// The cell of block `block` in a plan of `factors` factors: bit `f` is
+/// the Thue-Morse arm of `block >> f`. Factor 0 alternates as a plan of
+/// one does, and every run of `2^factors` blocks that starts at a multiple
+/// of that holds each cell once, so the factors are balanced against one
+/// another and each against a slow drift.
+pub fn cell_of(block: u32, factors: u8) -> u8 {
+    (0..factors.clamp(1, MAX_FACTORS as u8)).fold(0, |cell, f| cell | arm_of(block >> f) << f)
 }
 
 /// What a presented frame ran under.
@@ -156,7 +211,8 @@ pub struct Tag {
     pub exp: usize,
     /// The block the frame began in.
     pub block: u32,
-    /// That block's arm, 0 or 1.
+    /// That block's cell ([`cell_of`]): the arm, 0 or 1, in a plan of
+    /// one factor.
     pub arm: u8,
     /// Whether the frame began after the settling time of the last change.
     pub settled: bool,
@@ -192,7 +248,7 @@ impl Clock {
         let tag = Tag {
             exp: self.exp,
             block: self.block,
-            arm: if washout { 0 } else { arm_of(self.block) },
+            arm: if washout { 0 } else { plan.cell_at(self.block) },
             settled: !washout
                 && (self.last_s - self.changed_s >= plan.settle_s() || self.block == 0),
         };
@@ -209,9 +265,9 @@ impl Clock {
         let block = plan.block_at(now_s - self.epoch_s);
         let mut change = None;
         if block != self.block {
-            if arm_of(block) != arm_of(self.block) {
+            if plan.cell_at(block) != plan.cell_at(self.block) {
                 self.changed_s = now_s;
-                change = Some(arm_of(block));
+                change = Some(plan.cell_at(block));
             }
             self.block = block;
         }
@@ -224,7 +280,7 @@ impl Clock {
     }
 }
 
-/// The arm in force, read by every [`Toggle`] that alternates.
+/// The cell in force, read by every [`Toggle`] that alternates.
 static ARM: AtomicU8 = AtomicU8::new(0);
 /// The experiment in force (`SPARK_PLAN`; 0 for `SPARK_AB`).
 static EXP: AtomicUsize = AtomicUsize::new(0);
@@ -338,12 +394,14 @@ fn from_env(vars: impl Iterator<Item = (String, String)>, table: &[&str]) -> Opt
     let mut plan = plan.unwrap_or(Plan {
         period_s: DEFAULT_PERIOD_S,
         switches: Vec::new(),
+        factors: 1,
     });
     for name in alt {
         if !plan.switches.iter().any(|s| s.name == name) {
             plan.switches.push(Switch {
                 name,
                 values: ["0".to_owned(), "1".to_owned()],
+                factor: 0,
             });
         }
     }
@@ -442,18 +500,23 @@ pub fn frame_presented() -> Option<Tag> {
             spark.kind = "ab_arm",
             spark.arm = u64::from(arm),
             spark.block = u64::from(clock.block),
-            "A/B inside the run: arm {} from now: {}",
-            ["A", "B"][usize::from(arm)],
+            "A/B inside the run: {} from now: {}",
+            if plan.factors > 1 {
+                format!("cell {arm}")
+            } else {
+                format!("arm {}", ["A", "B"][usize::from(arm & 1)])
+            },
             plan.label(usize::from(arm))
         );
     }
     Some(tag)
 }
 
-/// The arm in force (0 for A, 1 for B) when the run has experiments, else
-/// `None`: what a capture of the frame is labelled with.
+/// The cell in force (0 for A, 1 for B in a plan of one factor) when the
+/// run has experiments, else `None`: what a capture of the frame is
+/// labelled with.
 pub fn arm() -> Option<u8> {
-    plan().map(|_| ARM.load(Relaxed) & 1)
+    plan().map(|_| ARM.load(Relaxed))
 }
 
 /// A toggle's values, read once.
@@ -461,9 +524,10 @@ pub fn arm() -> Option<u8> {
 enum State {
     /// The same for the whole run.
     Fixed(u64),
-    /// Per experiment, one per arm, or `None` where the experiment leaves
-    /// the switch alone; and the value it has then.
-    Arms(Vec<Option<[u64; 2]>>, u64),
+    /// Per experiment, one per level with the switch's factor, or `None`
+    /// where the experiment leaves the switch alone; and the value it has
+    /// then.
+    Arms(Vec<Option<([u64; 2], u8)>>, u64),
 }
 
 /// A switch of the environment that may alternate inside a run. Its value
@@ -506,15 +570,18 @@ impl Toggle {
             let Some(program) = program() else {
                 return State::Fixed(own);
             };
-            let per_exp: Vec<Option<[u64; 2]>> = program
+            let per_exp: Vec<Option<([u64; 2], u8)>> = program
                 .experiments
                 .iter()
                 .map(|(_, plan)| {
                     let s = plan.switches.iter().find(|s| s.name == self.name)?;
-                    Some([
-                        (self.parse)(Some(&s.values[0])),
-                        (self.parse)(Some(&s.values[1])),
-                    ])
+                    Some((
+                        [
+                            (self.parse)(Some(&s.values[0])),
+                            (self.parse)(Some(&s.values[1])),
+                        ],
+                        s.factor,
+                    ))
                 })
                 .collect();
             if per_exp.iter().all(Option::is_none) {
@@ -530,7 +597,7 @@ impl Toggle {
         match self.state() {
             State::Fixed(v) => *v,
             State::Arms(per_exp, own) => match per_exp.get(EXP.load(Relaxed)) {
-                Some(Some(v)) => v[usize::from(ARM.load(Relaxed) & 1)],
+                Some(Some((v, factor))) => v[usize::from(ARM.load(Relaxed) >> factor & 1)],
                 _ => *own,
             },
         }
@@ -547,7 +614,11 @@ impl Toggle {
         match self.state() {
             State::Fixed(v) => *v != 0,
             State::Arms(per_exp, own) => {
-                *own != 0 || per_exp.iter().flatten().any(|v| v[0] != 0 || v[1] != 0)
+                *own != 0
+                    || per_exp
+                        .iter()
+                        .flatten()
+                        .any(|(v, _)| v[0] != 0 || v[1] != 0)
             }
         }
     }
@@ -593,6 +664,35 @@ mod tests {
         ] {
             let e = Plan::parse(bad).unwrap_err();
             assert!(e.starts_with("SPARK_AB: "), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn factors_are_read_and_their_cells_are_balanced() {
+        let p = Plan::parse("VICTORY_A * VICTORY_B=80/94 + VICTORY_C * VICTORY_D : 10").unwrap();
+        assert_eq!(p.factors, 3);
+        assert_eq!(p.factor_label(1), "VICTORY_B=80/94+VICTORY_C=0/1");
+        // Cell 0b110: factor 0 at its first level, factors 1 and 2 at their second.
+        assert_eq!(
+            p.label(0b110),
+            "VICTORY_A=0 VICTORY_B=94 VICTORY_C=1 VICTORY_D=1"
+        );
+        assert!(Plan::parse("A*B*C*D*E*F").is_err());
+        for factors in 1..=MAX_FACTORS as u8 {
+            let cells = 1u32 << factors;
+            for start in [0, cells, 7 * cells] {
+                let mut seen: Vec<u8> = (start..start + cells)
+                    .map(|b| cell_of(b, factors))
+                    .collect();
+                seen.sort_unstable();
+                let all: Vec<u8> = (0..cells as u8).collect();
+                assert_eq!(seen, all, "{factors} factors from block {start}");
+            }
+        }
+        // Factor 0 is the arm of a plan of one.
+        for block in 0..64 {
+            assert_eq!(cell_of(block, 4) & 1, arm_of(block));
+            assert_eq!(cell_of(block, 1), arm_of(block));
         }
     }
 

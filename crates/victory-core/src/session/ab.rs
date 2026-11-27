@@ -103,10 +103,14 @@ fn median(v: &mut [f64]) -> Option<f64> {
 pub struct AbStats {
     /// What each arm sets (`NAME=value ...`).
     labels: [String; 2],
+    /// Each factor's switches with both values (`NAME=a/b`): one for a
+    /// plain A/B, more for a factorial, whose blocks are cells.
+    factors: Vec<String>,
     /// A block's length, seconds.
     period_s: f64,
     arms: [Arm; 2],
-    /// Per block: its arm and its settled world frames, ms.
+    /// Per block: its cell (the arm, in a plain A/B) and its settled
+    /// world frames, ms.
     blocks: BTreeMap<u32, (u8, Vec<f32>)>,
     /// The frames since the meter's last window: their count, how many
     /// were of the world, the arm of the first, and whether all were
@@ -119,11 +123,18 @@ impl AbStats {
     pub fn new(labels: [String; 2], period_s: f64) -> AbStats {
         AbStats {
             labels,
+            factors: Vec::new(),
             period_s,
             arms: Default::default(),
             blocks: BTreeMap::new(),
             window: (0, 0, 0, true),
         }
+    }
+
+    /// The plan's factors, each as `NAME=a/b` (see [`crate::ab::Plan::factor_label`]).
+    pub fn with_factors(mut self, factors: Vec<String>) -> AbStats {
+        self.factors = factors;
+        self
     }
 
     /// A frame of `ms` ended under `tag`; `world` says whether it counts
@@ -145,7 +156,11 @@ impl AbStats {
         a.total_ms += ms;
         a.long += u64::from(ms > LONG_MS);
         if self.blocks.len() < MAX_BLOCKS || self.blocks.contains_key(&tag.block) {
-            let block = &mut self.blocks.entry(tag.block).or_insert((arm, Vec::new())).1;
+            let block = &mut self
+                .blocks
+                .entry(tag.block)
+                .or_insert((tag.arm, Vec::new()))
+                .1;
             if block.len() < MAX_BLOCK_FRAMES {
                 block.push(ms as f32);
             }
@@ -172,10 +187,11 @@ impl AbStats {
             let Some((other_arm, other)) = self.blocks.get(&(block + 1)) else {
                 continue;
             };
-            if other.len() < MIN_BLOCK_FRAMES || other_arm == arm {
+            // Neighbouring blocks differ in factor 0 alone.
+            if other.len() < MIN_BLOCK_FRAMES || other_arm & 1 == arm & 1 {
                 continue;
             }
-            let (a, b) = if *arm == 0 {
+            let (a, b) = if arm & 1 == 0 {
                 (frames, other)
             } else {
                 (other, frames)
@@ -275,7 +291,7 @@ impl AbStats {
                 .bool("significant", v.significant())
                 .finish(),
         };
-        // Per block, for the analysis outside (scripts/ab_estat.py): its
+        // Per block, for the analysis outside (scripts/motor/estat.py): its
         // index, arm, settled frames of the stable scene and their numbers.
         let blocks = json::array(self.blocks.iter().map(|(&i, (arm, frames))| {
             let mut v: Vec<f64> = frames.iter().map(|x| f64::from(*x)).collect();
@@ -284,7 +300,8 @@ impl AbStats {
             let at = |p: f64| v.get(((n as f64 - 1.0) * p).round() as usize).copied();
             Obj::new()
                 .int("i", u64::from(i))
-                .int("arm", u64::from(*arm))
+                .int("arm", u64::from(*arm & 1))
+                .int("cell", u64::from(*arm))
                 .int("n", n as u64)
                 .opt_num("p50_ms", at(0.5))
                 .opt_num("p95_ms", at(0.95))
@@ -294,6 +311,10 @@ impl AbStats {
         }));
         Obj::new()
             .num("period_s", self.period_s)
+            .raw(
+                "factors",
+                &json::array(self.factors.iter().map(|f| json::string(f))),
+            )
             .int("blocks", self.blocks.len() as u64)
             .raw("block_stats", &blocks)
             .raw("a", &arm(0))
@@ -315,6 +336,15 @@ impl AbStats {
             self.period_s,
             self.blocks.len()
         );
+        if self.factors.len() > 1 {
+            let _ = writeln!(
+                s,
+                "Fatorial de {} fatores (`{}`): cada bloco roda uma combinação; A e B abaixo são só os dois níveis do \
+                 1º fator. O efeito de cada fator, com intervalo e interações, sai de `python scripts/motor.py ab <pasta>`.\n",
+                self.factors.len(),
+                self.factors.join("` × `")
+            );
+        }
         let _ = writeln!(s, "- **A**: `{}`", self.labels[0]);
         let _ = writeln!(s, "- **B**: `{}`\n", self.labels[1]);
         let _ = writeln!(s, "{}\n", self.sentence());
