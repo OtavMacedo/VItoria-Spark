@@ -105,6 +105,7 @@ enum Command {
         #[arg(long)]
         execute: bool,
         /// The console model the title sees (device type, memory).
+        /// `VICTORY_CONSOLE` sets it from the environment.
         #[arg(long, value_enum, default_value_t = Console::SeriesX)]
         console: Console,
         /// Arguments for the title, after `--` (it reads the whole command
@@ -192,8 +193,26 @@ fn main() -> Result<()> {
             execute,
             console,
             title_args: _,
-        } => run::run(&exe, unimplemented, strict, execute, console),
+        } => {
+            let console =
+                console_from_env(console, std::env::var("VICTORY_CONSOLE").ok().as_deref());
+            run::run(&exe, unimplemented, strict, execute, console)
+        }
         Command::Config => show_config(),
+    }
+}
+
+/// `VICTORY_CONSOLE` (`series-x` or `series-s`, the names `--console`
+/// takes): the console model for launchers and scripts that only set the
+/// environment, the AutoPilot among them. A value set there wins over
+/// `--console`; another value is reported and left out.
+fn console_from_env(flag: Console, var: Option<&str>) -> Console {
+    match var.map(str::trim) {
+        None | Some("") => flag,
+        Some(value) => Console::from_str(value, true).unwrap_or_else(|_| {
+            eprintln!("VICTORY_CONSOLE={value} is neither series-x nor series-s: left out");
+            flag
+        }),
     }
 }
 
@@ -241,4 +260,34 @@ pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         "no paths given and none configured (see victory.example.toml)"
     );
     Ok(all)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(console: Console) -> &'static str {
+        match console {
+            Console::SeriesX => "x",
+            Console::SeriesS => "s",
+        }
+    }
+
+    #[test]
+    fn the_environment_picks_the_console() {
+        assert_eq!(model(console_from_env(Console::SeriesX, None)), "x");
+        assert_eq!(model(console_from_env(Console::SeriesX, Some(""))), "x");
+        assert_eq!(
+            model(console_from_env(Console::SeriesX, Some("series-s"))),
+            "s"
+        );
+        assert_eq!(
+            model(console_from_env(Console::SeriesS, Some(" Series-X "))),
+            "x"
+        );
+        assert_eq!(
+            model(console_from_env(Console::SeriesS, Some("lockhart"))),
+            "s"
+        );
+    }
 }
