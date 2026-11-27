@@ -31,6 +31,20 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    lista de cima para baixo sem rodar o título de novo para cada item. O agente procura uma issue
    aberta sobre o mesmo problema. Se existir, comenta nela com os números agregados; se não, abre uma issue nova
    (modelo `autopilot`) e se atribui a ela.
+
+   **Coordenação entre pessoas e agentes:** várias pessoas rodam o AutoPilot ao mesmo tempo, e as issues dizem quem
+   trabalha em quê, para um não passar por cima do outro.
+   - **Antes de escolher:** `diagnosticar <pasta> --coordenar` marca os problemas que outra sessão já assumiu;
+     `python scripts/motor.py coordenar listar` mostra todos os alvos em andamento. Pule os que estão ocupados.
+   - **Ao começar:** `coordenar assumir <alvo> --titulo "<título>"` (o alvo é o `id` do problema, como
+     `fase:copy_back`, ou um mais fino, como `pipeline:<hash>`). Abre a issue com o rótulo `em-andamento`; se outra
+     sessão assumiu o mesmo alvo no mesmo instante, vale a issue mais antiga e a sua se fecha sozinha. Defina
+     `SPARK_SESSAO` com um nome por agente quando vários usam a mesma conta.
+   - **A cada passo:** `coordenar status <issue> "<o que foi feito, números agregados, próximo passo>"`. O status é
+     também o sinal de vida: sem status por 24 h, o alvo fica livre e outra sessão pode retomá-lo (`assumir` faz
+     isso e comenta na issue).
+   - **Ao terminar:** o PR diz `Fecha #<issue>`. Ao desistir: `coordenar liberar <issue> "<motivo e o que se
+     aprendeu>"`, que tira o rótulo e deixa o alvo livre com o histórico para quem vier depois.
 4. **Implementar:** branch `autopilot/<assunto>`, uma mudança lógica por commit, testes de unidade, e opção nova
    desligada por padrão quando houver risco.
 5. **Provar:** pelo menos duas execuções com a mudança e duas sem, mesmo build, caches aquecidos. Comparar a mediana e

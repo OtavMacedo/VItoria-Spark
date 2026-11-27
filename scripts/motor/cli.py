@@ -1,7 +1,7 @@
 """O motor de diagnóstico do VItoria Spark: uma execução, todos os problemas, a próxima execução planejada.
 
 Uso:
-  python scripts/motor.py diagnosticar <sessão> [--json] [--gravar]
+  python scripts/motor.py diagnosticar <sessão> [--json] [--gravar] [--coordenar]
       Todos os problemas da execução em ordem de custo, com evidência, correção sugerida, chaves a testar e código;
       os problemas de medição primeiro. Com `--gravar`: `diagnostico.md`, `diagnostico.json`, `plano.toml` e
       `plano.md` na pasta da sessão.
@@ -29,6 +29,9 @@ Uso:
       O piso de ruído da máquina, de uma execução com os dois braços iguais.
   python scripts/motor.py consultar <decisoes.jsonl> [<NOME>]
       O que já foi decidido (antes de testar de novo).
+  python scripts/motor.py coordenar listar | assumir <alvo> --titulo "..." | status <issue> "..." | liberar <issue>
+      Quem trabalha em quê, pelas issues do GitHub (rótulo `em-andamento`): assumir antes de começar, um status a
+      cada passo, liberar ao desistir; o PR que resolve fecha a issue (`motor/coordenacao.py`).
 
 <sessão> = a pasta de uma execução (vale a mais nova `resumo.json` dentro dela) ou o próprio `resumo.json`.
 Ler não grava: sem `--gravar` os comandos só imprimem, e a pasta de uma execução (a sua ou a de outra pessoa) fica
@@ -41,7 +44,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from . import estat, fila, offline, plano, problemas, relatorio, veredito
+from . import coordenacao, estat, fila, offline, plano, problemas, relatorio, veredito
 from .sessao import Sessao, dentro_do_repo
 
 
@@ -97,10 +100,14 @@ def diagnosticar(args: list[str]) -> int:
     so_json = _opcao(args, "--json", valor=False)
     gravar = bool(_opcao(args, "--gravar", valor=False))
     periodo = int(_opcao(args, "--periodo") or 20)
+    coordenar = bool(_opcao(args, "--coordenar", valor=False))
     if not args:
         sys.exit(__doc__)
     s = Sessao(args[0])
     d = problemas.diagnosticar(s)
+    if coordenar:
+        reivs = coordenacao.reivindicacoes(coordenacao.ler_issues())
+        coordenacao.anotar(d["problemas"], reivs, coordenacao.sessao_atual())
     p = plano.montar(d, periodo)
     d["plano"] = p
     arquivo_plano = s.pasta / "plano.toml"
@@ -108,6 +115,10 @@ def diagnosticar(args: list[str]) -> int:
     _gravar(s.pasta, {"diagnostico.md": texto, "diagnostico.json": json.dumps(d, ensure_ascii=False, indent=1),
                       "plano.toml": plano.toml(p), "plano.md": plano.md(p, str(arquivo_plano))}, gravar)
     print(json.dumps(d, ensure_ascii=False) if so_json else texto, end="" if not so_json else "\n")
+    ocupados = [p for p in d["problemas"] if p.get("em_andamento")]
+    if ocupados and not so_json:
+        print("\nEm andamento por outra sessão (escolha outro alvo): "
+              + ", ".join(f"`{p['id']}` (#{p['em_andamento']})" for p in ocupados))
     return 0
 
 
@@ -236,7 +247,8 @@ def consultar(args: list[str]) -> int:
 
 
 COMANDOS = {"fila": fila.comando, "diagnosticar": diagnosticar, "plano": planejar, "ab": ab, "comparar": comparar,
-            "reproduzir": reproduzir, "ruido": ruido, "consultar": consultar}
+            "reproduzir": reproduzir, "ruido": ruido, "consultar": consultar,
+            "coordenar": coordenacao.comando}
 
 
 def main(args: list[str] | None = None) -> int:
