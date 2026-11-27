@@ -15,7 +15,9 @@ PROBLEMA_DE_MEDICAO: sem cena estável, sem blocos/execuções bastantes, ruído
 execuções) um problema grave de medição em alguma delas (`medicao.py`): só nesse caso vale abrir o log. No A/B na
 execução os dois braços dividem a máquina, então memória e driver viram alerta, não bloqueio.
 
-Fatorial (`SPARK_AB=A*B*C`): um veredito por fator, com os mesmos critérios, e as interações entre fatores.
+Fatorial (`SPARK_AB=A*B*C`): um veredito por fator, com os mesmos critérios, e as interações entre fatores. São k
+comparações numa execução: cada fator decide com o limiar corrigido de `estat.t_de_decisao`, e o teste de quadros
+longos de cada um usa 5 %/k.
 """
 
 import math
@@ -143,12 +145,13 @@ def _fatorial(v: dict, s: Sessao, dados: dict, ruido: dict | None) -> dict:
         return {**v, "estado": "PROBLEMA_DE_MEDICAO",
                 "motivo": f"ruído por bloco {est['sd_bloco_pct']} % > 2x o piso ({ruido['sd_bloco_pct']} %)"}
     falhou = falhas(s.resumo)
+    k = len(est["fatores"])
     for f in est["fatores"]:
         p_longos = estat.fisher_mais(*f["longos"])
         um = {"criterios": {
             "quadro": f["efeito_pct"] <= -GANHO_MIN_PCT and f["estado"] == "GANHO",
-            "p95": not (f.get("p95_t", 0) >= 3 and f.get("p95_efeito_pct", 0) > P95_MAX_PCT),
-            "longos": p_longos >= 0.05,
+            "p95": not (f.get("p95_t", 0) >= est.get("t_decisao", 3) and f.get("p95_efeito_pct", 0) > P95_MAX_PCT),
+            "longos": p_longos >= 0.05 / k,
             "falhas": not falhou,
         }, "alertas": []}
         _fechar(um, f, f["estado"])
@@ -219,7 +222,8 @@ def md(v: dict) -> str:
         linhas.append(f"- A: `{v['planos'][0]}` | B: `{v['planos'][1]}`")
     if v["modo"] == "fatorial":
         linhas.append(f"- fatorial: {len(v.get('fatores', []))} fatores em {est.get('blocos', 0)} blocos; ruído por "
-                      f"bloco {est.get('sd_bloco_pct', '?')} %")
+                      f"bloco {est.get('sd_bloco_pct', '?')} %; cada fator decide com |t| >= "
+                      f"{est.get('t_decisao', '?')} (corrigido para {len(v.get('fatores', []))} comparações)")
         for f in v.get("fatores", []):
             linhas.append(f"- `{f['fator']}`: **{f['estado']}** {f['efeito_pct']:+.1f} % (IC 95 % "
                           f"{f['ic95_pct'][0]:+.1f} a {f['ic95_pct'][1]:+.1f}), t {f['t']}, MDE {f['mde_pct']} %, "
@@ -228,7 +232,9 @@ def md(v: dict) -> str:
         for i in est.get("interacoes", []):
             linhas.append(f"- interação `{i['fatores'][0]}` × `{i['fatores'][1]}`: {i['efeito_pct']:+.1f} % "
                           f"(t {i['t']}): os efeitos não se somam")
-        if not est.get("interacoes"):
+        if not est.get("interacoes_testadas", True):
+            linhas.append("- interações: não testadas (blocos insuficientes para o ajuste com os produtos)")
+        elif not est.get("interacoes"):
             linhas.append("- interações: nenhuma com |t| >= 3 (os efeitos se somam)")
     elif "efeito_pct" in est:
         unid = f"{est.get('pares', 0)} pares de blocos" if v["modo"] == "ab" else \

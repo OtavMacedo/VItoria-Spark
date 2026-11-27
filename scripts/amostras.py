@@ -20,7 +20,6 @@ enquanto ele cresce e diz quando parar.
 """
 
 import json
-import math
 import os
 import re
 import sys
@@ -30,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from motor.estat import analisar, fatores  # noqa: E402
+from motor.estat import analisar, fatores, intervalo_da_mediana  # noqa: E402
 from motor.plano import teto_s  # noqa: E402
 
 ANSI = re.compile(rb"\x1b\[[0-9;]*m")
@@ -48,17 +47,6 @@ def _num(nome: str, padrao: float, env: dict | None) -> float:
         return float((env or os.environ).get(nome, padrao))
     except ValueError:
         return padrao
-
-
-def intervalo_da_mediana(valores: list[float]) -> tuple[float, float, float]:
-    """(baixo, mediana, alto): intervalo de 95 % da mediana pelas estatísticas de ordem (aproximação normal da
-    binomial)."""
-    s = sorted(valores)
-    n = len(s)
-    h = 1.96 * math.sqrt(n) / 2
-    baixo = max(0, math.floor(n / 2 - h))
-    alto = min(n - 1, math.ceil(n / 2 + h))
-    return s[baixo], s[n // 2], s[alto]
 
 
 class Parada:

@@ -75,18 +75,32 @@ execuções (`comparar`), um achado grave em qualquer execução dá `PROBLEMA_D
 `SPARK_AB=A*B*C` (ou `ab = "A*B*C"` num experimento de `SPARK_PLAN`) faz de cada lado do `*` um fator; `+` continua
 juntando chaves que mudam juntas (`A+B*C` tem dois fatores). Cada bloco roda uma combinação de níveis:
 
-- o nível do fator `f` no bloco `b` é o braço Thue–Morse de `b >> f`: o fator 0 alterna como no A/B simples, e todo
-  trecho de `2^k` blocos alinhados tem cada combinação uma vez (fatores equilibrados entre si e contra a deriva);
+- o nível do fator `f` no bloco `b` é a paridade de alguns bits de `b`: todos para o fator 0 (a sequência de
+  Thue–Morse do A/B simples), todos menos o bit 0 para o fator 1 e, daí em diante, todos menos os bits 0 e `f`.
+  Assim os blocos `2j` e `2j+1` só diferem no fator 0, todo trecho de `2^k` blocos alinhados tem cada combinação
+  uma vez (fatores equilibrados entre si) e **nenhum fator fica mais de 4 blocos seguidos no mesmo nível**: uma
+  deriva lenta da cena não passa por efeito de um fator;
 - **todo bloco informa todos os fatores**: N chaves custam pouco mais que uma, em vez de N execuções;
 - o motor ajusta `ln(mediana do bloco) = a + b·índice + Σ efeito_f·nível_f` e dá, por fator, efeito, IC 95 %, t e
   estado com os mesmos critérios do A/B (p95 e quadros > 1 s por nível);
+- **k fatores são k comparações**: cada fator decide com o |t| cujo p é o de |t| = 3 dividido por k (Bonferroni;
+  com 20 graus de liberdade, 3,3 para dois fatores e 3,7 para cinco), `SEM_EFEITO` pede o intervalo simultâneo
+  dentro de ±2 %, e o teste de quadros > 1 s de cada fator usa 5 %/k. A chance de algum fator sem efeito sair
+  `GANHO` ou `REGRESSAO` não cresce com o número de fatores;
 - um segundo ajuste com os produtos dois a dois acusa **interação** (|t| ≥ 3): os efeitos não se somam, e o fator
-  não é GANHO sozinho (teste os dois juntos num A/B simples);
+  não é GANHO sozinho (teste os dois juntos num A/B simples). Com blocos de menos para esse ajuste (cinco fatores
+  pedem 19), o veredito diz "interações: não testadas" em vez de dizer que não há;
 - a execução para quando **todos** os fatores decidiram; o teto cresce 240 s por fator a mais. Até 5 fatores.
 
 As capturas levam a combinação no nome (`frame-N-c<célula>.png`, bit `f` = nível do fator `f`). Só entram as chaves
 da tabela `crates/victory-gpu/src/switches.rs`; o plano as tira de lá e deixa fora as que a configuração tornaria
-sem efeito.
+sem efeito e as de medição (`SPARK_PHASES`, que está na tabela para o seu próprio custo poder ser medido:
+`SPARK_AB=SPARK_PHASES=0/1`).
+
+Simulado com o ruído e a deriva das execuções medidas (resíduos por bloco de 1,5 % com autocorrelação de 0,2 a 0,6),
+olhando a cada 3 blocos até o teto: com cinco fatores sem efeito, algum saía `GANHO`/`REGRESSAO` em 26 % (sem
+deriva) a 52 % (com deriva) das execuções quando cada fator decidia com |t| ≥ 3 e o fator `f` trocava de nível a
+cada `2^f` blocos; com a regra e os níveis acima, em 1 a 3 %, e um efeito real de −5 % é achado em 80 a 98 %.
 
 ## Verificação sem o título (`reproduzir`)
 

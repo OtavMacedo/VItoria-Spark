@@ -5,12 +5,17 @@
   Thue-Morse dos blocos já equilibra). exp(e) - 1 é a mudança do quadro (negativo = B mais rápido).
 - Fatorial (`SPARK_AB=A*B*C`): y = a + b·índice + Σ e_f·nível_f. Cada bloco informa todos os fatores; um segundo
   ajuste com os produtos dois a dois acusa interação (|t| >= 3): aí os efeitos não se somam.
+- Vários fatores são várias comparações: com k fatores, cada um decide com o p do seu t dividido por k (Bonferroni
+  sobre o p de |t| = 3 com os mesmos graus de liberdade), e SEM_EFEITO pede o intervalo simultâneo (95 % para os
+  k juntos) dentro de ±`EQUIV_PCT` %. Assim a chance de algum fator sem efeito sair GANHO ou REGRESSAO não cresce
+  com o número de fatores. O teste de quadros longos por fator divide o seu 5 % por k do mesmo modo.
 - Parada sequencial (para olhar a cada bloco novo): com `PARES_MIN` pares (ou `2·PARES_MIN` blocos por fator),
   |t| >= 3 decide (GANHO se B mais rápido, REGRESSAO se mais lento); IC 95 % dentro de ±`EQUIV_PCT` % decide
   SEM_EFEITO; senão continua. No teto: INCONCLUSIVO, com a menor diferença detectável (MDE ≈ 2,8·erro).
 """
 
 import math
+from functools import lru_cache
 
 PARES_MIN = 6
 T_DECIDE = 3.0
@@ -18,14 +23,72 @@ EQUIV_PCT = 2.0
 QUADROS_MIN = 5
 
 
-def t95(gl: int) -> float:
-    """Ponto bilateral de 95 % do t de Student com `gl` graus de liberdade."""
-    tabela = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145,
-              2.131, 2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048,
-              2.045, 2.042]
+def _fracao_continua(a: float, b: float, x: float) -> float:
+    """A fração contínua da função beta incompleta (Lentz modificado)."""
+    minimo = 1e-300
+    c, d = 1.0, 1.0 - (a + b) * x / (a + 1.0)
+    d = 1.0 / (d if abs(d) > minimo else minimo)
+    h = d
+    for m in range(1, 300):
+        for num in (m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
+                    -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))):
+            d = 1.0 + num * d
+            d = 1.0 / (d if abs(d) > minimo else minimo)
+            c = 1.0 + num / c
+            c = c if abs(c) > minimo else minimo
+            h *= d * c
+        if abs(d * c - 1.0) < 1e-14:
+            break
+    return h
+
+
+def _beta_incompleta(a: float, b: float, x: float) -> float:
+    """A função beta incompleta regularizada I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    frente = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return frente * _fracao_continua(a, b, x) / a
+    return 1.0 - frente * _fracao_continua(b, a, 1.0 - x) / b
+
+
+def p_bilateral(t: float, gl: int) -> float:
+    """P(|T| >= |t|) do t de Student com `gl` graus de liberdade (1 sem graus de liberdade)."""
+    if gl <= 0:
+        return 1.0
+    if math.isinf(t):
+        return 0.0
+    return _beta_incompleta(gl / 2.0, 0.5, gl / (gl + t * t))
+
+
+@lru_cache(maxsize=None)
+def t_critico(alfa: float, gl: int) -> float:
+    """O |t| que o t de Student com `gl` graus de liberdade passa com probabilidade `alfa` (bilateral)."""
     if gl <= 0:
         return math.inf
-    return tabela[gl - 1] if gl <= 30 else 2.0 if gl <= 120 else 1.96
+    baixo, alto = 0.0, 1e6
+    for _ in range(200):
+        meio = (baixo + alto) / 2
+        if p_bilateral(meio, gl) > alfa:
+            baixo = meio
+        else:
+            alto = meio
+    return alto
+
+
+def t95(gl: int) -> float:
+    """Ponto bilateral de 95 % do t de Student com `gl` graus de liberdade."""
+    return t_critico(0.05, gl)
+
+
+def t_de_decisao(gl: int, comparacoes: int = 1) -> float:
+    """O |t| que decide GANHO/REGRESSAO: `T_DECIDE` numa comparação; com k, o t cujo p é o de `T_DECIDE`
+    dividido por k (Bonferroni), para a chance de um falso achado não crescer com o número de fatores."""
+    if comparacoes <= 1:
+        return T_DECIDE
+    return t_critico(p_bilateral(T_DECIDE, gl) / comparacoes, gl)
 
 
 def pct(x_log: float) -> float:
@@ -124,8 +187,10 @@ def pares(bs: list[dict]) -> list[float]:
     return out
 
 
-def _decidir(efeito_log: float, t: float, ic: list[float], bastante: bool, teto: bool) -> str:
-    if bastante and abs(t) >= T_DECIDE:
+def _decidir(efeito_log: float, t: float, ic: list[float], bastante: bool, teto: bool,
+             t_decide: float = T_DECIDE) -> str:
+    """`ic`: o intervalo (em %) que precisa caber em ±`EQUIV_PCT` para SEM_EFEITO."""
+    if bastante and abs(t) >= t_decide:
         return "GANHO" if efeito_log < 0 else "REGRESSAO"
     if bastante and -EQUIV_PCT <= ic[0] and ic[1] <= EQUIV_PCT:
         return "SEM_EFEITO"
@@ -180,12 +245,15 @@ def analisar_fatorial(ab: dict, teto: bool = False) -> dict:
 
     Devolve `fatores` (um por fator: efeito, IC, t, estado, p95 e quadros longos por nível) e `interacoes`. O estado
     geral é DECIDIDO quando todos os fatores decidiram, CONTINUA enquanto falta algum e INCONCLUSIVO no teto.
+    Cada fator decide com `t_de_decisao(gl, k)` e com o intervalo simultâneo (`ic_simultaneo_pct`): k comparações.
     Um fator que interage com outro (|t| >= 3 no produto) não é GANHO sozinho: fica INCONCLUSIVO, com o par.
+    `interacoes_testadas` é False quando os blocos não bastam para o ajuste com os produtos (nada se conclui delas).
     """
     nomes = fatores(ab)
     k = len(nomes)
     bs = blocos(ab)
-    out: dict = {"blocos": len(bs), "pares": len(bs) // 2, "fatores": [], "interacoes": []}
+    out: dict = {"blocos": len(bs), "pares": len(bs) // 2, "fatores": [], "interacoes": [],
+                 "interacoes_testadas": False}
     x = [[1.0, float(b["i"])] + _niveis(b, k) for b in bs]
     fit = regressao(x, [math.log(b["p50_ms"]) for b in bs]) if bs else None
     if fit is None:
@@ -194,20 +262,24 @@ def analisar_fatorial(ab: dict, teto: bool = False) -> dict:
     com95 = [b for b in bs if b.get("p95_ms")]
     fit95 = regressao([[1.0, float(b["i"])] + _niveis(b, k) for b in com95],
                       [math.log(b["p95_ms"]) for b in com95]) if com95 else None
-    out.update(sd_bloco_pct=round(fit["sd"] * 100, 2))
+    t_decide = t_de_decisao(fit["gl"], k)
+    t_simultaneo = t_critico(0.05 / k, fit["gl"])
+    out.update(sd_bloco_pct=round(fit["sd"] * 100, 2), t_decisao=round(t_decide, 2))
     for f, nome in enumerate(nomes):
         e, erro = fit["beta"][2 + f], fit["erro"][2 + f]
         meia = t95(fit["gl"]) * erro
         por_nivel = [[b for b in bs if _niveis(b, k)[f] == nivel] for nivel in (0.0, 1.0)]
         ic = [round(pct(e - meia), 2), round(pct(e + meia), 2)]
+        junto = [round(pct(e - t_simultaneo * erro), 2), round(pct(e + t_simultaneo * erro), 2)]
         t = e / erro if erro > 0 else math.inf
         bastante = min(len(por_nivel[0]), len(por_nivel[1])) >= PARES_MIN
         fator = {
-            "fator": nome, "efeito_pct": round(pct(e), 2), "ic95_pct": ic, "t": round(t, 2),
+            "fator": nome, "efeito_pct": round(pct(e), 2), "ic95_pct": ic, "ic_simultaneo_pct": junto,
+            "t": round(t, 2),
             "mde_pct": round(2.8 * erro * 100, 2), "blocos": [len(por_nivel[0]), len(por_nivel[1])],
             "longos": [sum(b.get("over_1s", 0) for b in por_nivel[0]), sum(b.get("n", 0) for b in por_nivel[0]),
                        sum(b.get("over_1s", 0) for b in por_nivel[1]), sum(b.get("n", 0) for b in por_nivel[1])],
-            "estado": _decidir(e, t, ic, bastante, teto),
+            "estado": _decidir(e, t, junto, bastante, teto, t_decide),
         }
         if fit95:
             e95, erro95 = fit95["beta"][2 + f], fit95["erro"][2 + f]
@@ -218,6 +290,7 @@ def analisar_fatorial(ab: dict, teto: bool = False) -> dict:
     com = regressao([r + [r[2 + a] * r[2 + b] for a, b in duplas] for r in x],
                     [math.log(b["p50_ms"]) for b in bs]) if duplas else None
     if com:
+        out["interacoes_testadas"] = True
         for j, (a, b) in enumerate(duplas):
             e, erro = com["beta"][2 + k + j], com["erro"][2 + k + j]
             t = e / erro if erro > 0 else math.inf

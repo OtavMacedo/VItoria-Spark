@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import amostras  # noqa: E402
 from motor import conhecimento, estat, medicao, offline, plano, problemas, relatorio, veredito  # noqa: E402
 from motor.cli import main as _main  # noqa: E402
 from motor.sessao import RAIZ, Sessao, dentro_do_repo  # noqa: E402
@@ -134,6 +135,53 @@ class Estatistica(unittest.TestCase):
         self.assertEqual(len(v["interacoes"]), 1)
         self.assertTrue(all(f.get("interage_com") for f in v["fatores"]))
         self.assertNotIn("GANHO", [f["estado"] for f in v["fatores"]])
+
+    def test_t_de_student_confere_com_a_tabela(self):
+        for gl, tabela in ((1, 12.706), (5, 2.571), (10, 2.228), (30, 2.042), (60, 2.000), (120, 1.980)):
+            self.assertAlmostEqual(estat.t95(gl), tabela, places=3)
+        self.assertAlmostEqual(estat.p_bilateral(2.228, 10), 0.05, places=4)
+        self.assertEqual(estat.p_bilateral(0.0, 10), 1.0)
+        self.assertEqual(estat.t95(0), math.inf)
+
+    def test_mais_fatores_pedem_mais_evidencia(self):
+        limiares = [estat.t_de_decisao(20, k) for k in (1, 2, 3, 5)]
+        self.assertEqual(limiares[0], estat.T_DECIDE)
+        self.assertEqual(limiares, sorted(limiares))
+        self.assertGreater(limiares[3], 3.5)
+        # O mesmo p de |t| = 3, dividido pelo número de comparações.
+        self.assertAlmostEqual(estat.p_bilateral(limiares[3], 20) * 5, estat.p_bilateral(3.0, 20), places=6)
+        # Um efeito que decidiria sozinho (t entre 3 e o limiar de cinco fatores) espera mais blocos entre cinco.
+        ab = blocos([-0.015, 0.0, 0.0, 0.0, 0.0], n=40, ruido=0.03)
+        v = estat.analisar_fatorial(ab)
+        primeiro = v["fatores"][0]
+        self.assertTrue(3.0 <= abs(primeiro["t"]) < v["t_decisao"], (primeiro["t"], v["t_decisao"]))
+        self.assertEqual(primeiro["estado"], "CONTINUA")
+        # SEM_EFEITO pede o intervalo simultâneo, mais largo que o de 95 % de um fator só.
+        self.assertLess(primeiro["ic_simultaneo_pct"][0], primeiro["ic95_pct"][0])
+
+    def test_deriva_lenta_nao_vira_efeito_de_um_fator(self):
+        # Uma onda lenta da cena (período de 32 blocos), sem efeito de chave nenhuma.
+        ab = blocos([0.0] * 5, n=72, ruido=0.005)
+        for b in ab["block_stats"]:
+            b["p50_ms"] *= math.exp(0.04 * math.sin(2 * math.pi * b["i"] / 32))
+        v = estat.analisar_fatorial(ab, teto=True)
+        self.assertNotIn("GANHO", [f["estado"] for f in v["fatores"]])
+        self.assertNotIn("REGRESSAO", [f["estado"] for f in v["fatores"]])
+        # Com o fator preso ao mesmo nível por 16 blocos seguidos, a mesma onda passaria por efeito dele.
+        for b in ab["block_stats"]:
+            lento = bin(b["i"] >> 4).count("1") & 1
+            b["cell"] = b["cell"] & 0b01111 | lento << 4
+        lento = estat.analisar_fatorial(ab, teto=True)["fatores"][4]
+        self.assertGreater(abs(lento["t"]), 2 * max(abs(f["t"]) for f in v["fatores"]))
+
+    def test_interacao_sem_blocos_bastantes_nao_e_dada_como_ausente(self):
+        ab = blocos([0.0] * 5, n=16)
+        v = estat.analisar_fatorial(ab, teto=True)
+        self.assertFalse(v["interacoes_testadas"])
+        texto = veredito.md({"estado": "INCONCLUSIVO", "modo": "fatorial", "efeito": v, "fatores": [
+            {**f, "motivo": None} for f in v["fatores"]], "alertas": [], "criterios": {}})
+        self.assertIn("interações: não testadas", texto)
+        self.assertTrue(estat.analisar_fatorial(blocos([0.0] * 5, n=48), teto=True)["interacoes_testadas"])
 
     def test_fatorial_para_quando_todos_decidem(self):
         self.assertEqual(estat.analisar(blocos([-0.06, 0.05], n=8))["estado"], "CONTINUA")
@@ -400,6 +448,52 @@ class Offline(ComSessao):
         env = offline.ambiente(self.sessao(resumo(), eventos), {"VICTORY_X": "1"})
         self.assertEqual((env["VICTORY_HOST_WAVE"], env["VICTORY_VIEW_LIMIT"], env["VICTORY_X"]),
                          ("32", "999999", "1"))
+
+
+class Parada(ComSessao):
+    """A parada antecipada de `scripts/amostras.py` sobre um log e um resumo sintéticos."""
+
+    def parada(self, ab: dict, segundos: int, plano_toml: str | None = None) -> amostras.Parada:
+        pasta = Path(self.tmp.name)
+        linhas = [f"2026-01-01T00:{t // 60:02d}:{t % 60:02d}.000Z  INFO 4.0 fps, 250.0 ms/frame (x) 5000 draws/frame"
+                  for t in range(0, 61 + segundos, 5)]
+        (pasta / "saida.log").write_text("\n".join(linhas) + "\n", encoding="utf-8")
+        env = {"SPARK_AB": "x"}
+        chave = "ab"
+        if plano_toml:
+            (pasta / "plano.toml").write_text(plano_toml, encoding="utf-8")
+            env = {"SPARK_PLAN": str(pasta / "plano.toml")}
+            chave = "ab_experiments"
+            ab = [{"name": "um", "ab": ab}, {"name": "dois", "ab": blocos([0.0], n=4)}]
+        (pasta / "resumo.json").write_text(json.dumps({chave: ab}), encoding="utf-8")
+        return amostras.Parada(pasta / "saida.log", pasta, env)
+
+    def test_fatorial_segue_ate_todos_os_fatores_decidirem(self):
+        # O fator 0 decide cedo; o fator 1, com efeito menor, ainda não: a execução continua.
+        falta = blocos([-0.08, -0.012], n=16, ruido=0.02)
+        self.assertEqual(estat.analisar(falta)["fatores"][0]["estado"], "GANHO")
+        self.assertEqual(estat.analisar(falta)["fatores"][1]["estado"], "CONTINUA")
+        self.assertIsNone(self.parada(falta, 300).decidir())
+        motivo = self.parada(blocos([-0.08, 0.05], n=40), 300).decidir()
+        self.assertIn("fatorial DECIDIDO", motivo)
+        self.assertIn("VICTORY_F1=0/1 REGRESSAO", motivo)
+
+    def test_teto_cresce_com_os_fatores(self):
+        falta = blocos([-0.08, -0.012], n=16, ruido=0.02)
+        # 500 s de cena estável: passou do teto de um A/B simples (480 s), não do de dois fatores (720 s).
+        self.assertIsNone(self.parada(falta, 500).decidir())
+        self.assertIn("fatorial", self.parada(falta, 730).decidir())
+        simples = blocos([0.0], n=4)
+        self.assertIn("INCONCLUSIVO", self.parada(simples, 500).decidir())
+
+    def test_plano_passa_ao_experimento_seguinte_quando_o_fatorial_decide(self):
+        toml = 'periodo_s = 20\n[[experimento]]\nnome = "um"\nab = "A*B"\n[[experimento]]\nnome = "dois"\nab = "C"\n'
+        p = self.parada(blocos([-0.08, 0.05], n=40), 300, toml)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(p.decidir())
+        self.assertEqual(p.exp, 1)
+        self.assertEqual(p.controle.read_text(encoding="utf-8"), "1")
+        self.assertEqual(p.resultados[0]["estado"], "DECIDIDO")
 
 
 class Conhecimento(unittest.TestCase):
