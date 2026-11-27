@@ -27,7 +27,7 @@ def diagnostico(d: dict, plano: dict | None = None, gravado: bool = True) -> str
         escopo = "cena estável" if q["escopo"] == "stable" else "mundo"
         linhas.append(f"- quadro ({escopo}): p50 {q['p50_ms']:.1f} ms ({1000 / q['p50_ms']:.1f} fps)"
                       + (f", p95 {q['p95_ms']:.1f}, p99 {q['p99_ms']:.1f}" if q.get("p95_ms") else "")
-                      + (f"; o limite é a {q['limite']}" if q.get("limite") else ""))
+                      + (f"; o limite: {q['limite']}" if q.get("limite") else ""))
     if q["fonte"] == "medianas":
         linhas.append("- fases: execução anterior às fases por quadro; os números vêm das medianas das janelas")
     if d["medicao"]:

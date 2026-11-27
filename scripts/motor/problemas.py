@@ -22,6 +22,8 @@ CAUDA_VEZES = 3.0
 CAUDA_MS = 10.0
 # Cópia em memória abaixo disto (MB/s) é lenta: a origem custa a ler ou faltam páginas.
 COPIA_LENTA_MB_S = 1500.0
+# Parte da espera pela placa com ela ociosa acima da qual a espera é fila e sincronização, não trabalho dela.
+PLACA_OCIOSA_PARTE = 0.3
 # Memória compartilhada em uso (MB) acima da qual a placa está transbordando para a RAM.
 COMPARTILHADA_MB = 2048
 
@@ -83,7 +85,7 @@ def _fases(s: Sessao) -> list[dict]:
             ociosa = partes["card_idle"]["mean_ms"]
             ev.append(f"a placa ficou ociosa {ociosa:.1f} ms por quadro: "
                       + ("boa parte da espera é fila e sincronização, não trabalho da placa"
-                         if ociosa > 0.3 * p["mean_ms"] else "a espera é trabalho da placa"))
+                         if ociosa > PLACA_OCIOSA_PARTE * p["mean_ms"] else "a espera é trabalho da placa"))
         out.append(_problema(f"fase:{nome}", info["titulo"], p["share_pct"], ev, info["ideia"],
                              chaves=K.chaves_da_fase(nome, s.env), codigo=info["codigo"], o_que=info["o_que"],
                              custo_ms=round(p["mean_ms"], 2), parte_pct=round(p["share_pct"], 1)))
@@ -275,7 +277,14 @@ def diagnosticar(s: Sessao) -> dict:
     gpu, preparo = (partes.get(n, {}).get("mean_ms") for n in ("gpu", "preparing"))
     limite = None
     if gpu is not None and preparo is not None:
-        limite = "placa" if gpu > preparo else "CPU (preparo)"
+        ociosa = partes.get("card_idle", {}).get("mean_ms") or 0.0
+        # Esperar a placa não é a placa trabalhar: com ela ociosa boa parte da espera, o limite é a sincronização.
+        if gpu <= preparo:
+            limite = "CPU (preparo)"
+        elif ociosa > PLACA_OCIOSA_PARTE * gpu:
+            limite = f"sincronização com a placa (ela fica ociosa {ociosa:.0f} dos {gpu:.0f} ms de espera)"
+        else:
+            limite = "placa"
     graves = medicao.graves(achados)
     estado = "FALHA" if any(p["pontos"] >= 800 for p in problemas) else "PROBLEMA_DE_MEDICAO" if graves else "OK"
     est = s.estavel().get("frames") or {}

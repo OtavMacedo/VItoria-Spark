@@ -84,8 +84,8 @@ def _alertas_de_medicao(v: dict, sessoes: list[Sessao], bloquear: bool) -> str |
     motivo = None
     for s in sessoes:
         for a in medicao.verificar(s):
-            # Sem cena estável e falhas já são critérios do veredito.
-            if a["id"] in ("falha", "dispositivo_perdido"):
+            # Falhas já são critérios do veredito, e que a execução alternou chaves é o próprio A/B.
+            if a["id"] in ("falha", "dispositivo_perdido", "ab_na_execucao"):
                 continue
             v["alertas"].append(f"{s.nome}: {a['texto']}")
             if a["grave"] and bloquear and motivo is None:

@@ -11,7 +11,8 @@ from .sessao import Sessao
 # Criação do dispositivo: segundos a partir dos quais o driver está num estado em que a execução não vale
 # (o normal é abaixo de 10 s).
 DISPOSITIVO_LENTO_S = 30.0
-# Cache de shaders do driver: tamanho a partir do qual ele atrasa a criação do dispositivo e pipelines.
+# Cache de shaders do driver: tamanho a partir do qual vale avisar. Só alerta: o que invalida a execução é o
+# efeito medido (a criação lenta do dispositivo, acima), não o tamanho, que sozinho não foi medido como causa.
 CACHE_DO_DRIVER_MB = 4096
 # Janelas de 1 s da cena estável abaixo das quais a mediana do quadro não está medida.
 JANELAS_MIN = 20
@@ -65,9 +66,9 @@ def verificar(s: Sessao) -> list[dict]:
                            "limpar o cache de shaders do driver e repetir; o driver está num estado lento"))
     cache = (r.get("measurement") or {}).get("driver_cache_mb")
     if cache is not None and cache > CACHE_DO_DRIVER_MB:
-        out.append(_achado("cache_do_driver", True,
+        out.append(_achado("cache_do_driver", False,
                            f"o cache de shaders do driver tinha {cache / 1024:.1f} GB no início da execução",
-                           "apagar o cache do driver (ele o refaz) e repetir"))
+                           "se o dispositivo demorar a ser criado, apagar o cache do driver (ele o refaz) e repetir"))
     mem = r.get("memory") or {}
     nos_longos = mem.get("page_faults_per_s_in_long_frames") or 0
     media = mem.get("page_faults_per_s_mean")

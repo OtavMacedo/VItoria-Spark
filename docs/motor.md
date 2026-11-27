@@ -62,7 +62,7 @@ num build de diagnóstico, das mensagens do log de quadros; o relatório diz iss
 | Achado | Regra | Grave? |
 |---|---|---|
 | `dispositivo_lento` | criação do dispositivo D3D12 acima de 30 s | sim |
-| `cache_do_driver` | cache de shaders do driver acima de 4 GB no início | sim |
+| `cache_do_driver` | cache de shaders do driver acima de 4 GB no início | não: o que invalida é o efeito medido (`dispositivo_lento`) |
 | `sem_mundo`, `sem_cena_estavel`, `poucas_amostras` | menos de 20 janelas de 1 s da cena estável | sim |
 | `caches_frios` | mais de 20 % das amostras estáveis com pipelines sendo feitas | sim |
 | `tempestade_de_faltas` | quadros > 1 s com 5.000+ falhas de página/s e 3× a média | se passam de 10 % do tempo |
@@ -70,6 +70,9 @@ num build de diagnóstico, das mensagens do log de quadros; o relatório diz iss
 | `cena_instavel` | IC 95 % da mediana do quadro acima de ±10 % | não |
 | `ab_na_execucao` | a execução alternou chaves: as fases misturam os braços | não |
 | `eventos_perdidos` | fila do log cheia | não |
+
+O estado `PROBLEMA_DE_MEDICAO` vem só dos achados graves. A espera pela placa é dita "placa" no cabeçalho só
+quando a placa trabalha durante ela: com a placa ociosa em mais de 30 % da espera, o limite dito é a sincronização.
 
 Num A/B na execução os dois braços dividem a máquina, então estes achados entram como alerta no veredito. Entre
 execuções (`comparar`), um achado grave em qualquer execução dá `PROBLEMA_DE_MEDICAO` (`--sem-medicao` desliga).

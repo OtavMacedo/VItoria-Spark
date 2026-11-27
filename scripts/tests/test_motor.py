@@ -206,9 +206,12 @@ class Medicao(ComSessao):
     def test_execucao_sadia_nao_tem_achado(self):
         self.assertEqual(self.ids(resumo()), {})
 
-    def test_dispositivo_lento_e_cache_do_driver_sao_graves(self):
+    def test_dispositivo_lento_e_grave_e_o_cache_do_driver_so_alerta(self):
         r = resumo(measurement={"device_create_ms": 45000, "driver_cache_mb": 31000})
-        self.assertEqual(self.ids(r), {"dispositivo_lento": True, "cache_do_driver": True})
+        self.assertEqual(self.ids(r), {"dispositivo_lento": True, "cache_do_driver": False})
+        # O tamanho do cache sozinho não invalida uma execução cujo dispositivo foi criado no tempo normal.
+        r = resumo(measurement={"device_create_ms": 6000, "driver_cache_mb": 31000})
+        self.assertEqual(self.ids(r), {"cache_do_driver": False})
 
     def test_criacao_do_dispositivo_sai_dos_eventos_em_execucoes_antigas(self):
         r = resumo(measurement=None)
@@ -259,6 +262,18 @@ class Diagnostico(ComSessao):
         self.assertIn("VICTORY_COPY_PLAIN", alternaveis)
         self.assertTrue(all((RAIZ / c).exists() for c in copias["codigo"]))
         self.assertEqual(d["quadro"]["limite"], "CPU (preparo)")
+
+    def test_placa_ociosa_durante_a_espera_nao_e_o_limite(self):
+        def com(ociosa_ms: float) -> str:
+            r = resumo()
+            for p in r["phases"]["parts"]:
+                if p["name"] == "gpu":
+                    p.update(fase("gpu", 60, 100))
+                if p["name"] == "card_idle":
+                    p.update(fase("card_idle", ociosa_ms, 100))
+            return problemas.diagnosticar(self.sessao(r))["quadro"]["limite"]
+        self.assertEqual(com(5), "placa")
+        self.assertIn("sincronização", com(40))
 
     def test_problema_de_medicao_e_dito_no_lugar_de_um_veredito(self):
         r = resumo(measurement={"device_create_ms": 45000})
