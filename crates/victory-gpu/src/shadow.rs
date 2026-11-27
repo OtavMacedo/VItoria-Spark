@@ -2230,7 +2230,7 @@ fn back_piece(
     // data (one cleared a bit of a record the title had already replaced,
     // and copying it back broke the title's object: an access violation
     // through 0xffffffff00000000; PalmVIDev e0b70476, VIctory f39c6c2).
-    mask.clear();
+    // Every mask byte is overwritten below; keeping its length spares clearing reused scratch.
     mask.resize(n, 0);
     let mut differs = 0u8;
     for (((t, h), o), m) in title
@@ -2249,20 +2249,39 @@ fn back_piece(
     if differs == 0 {
         return None;
     }
-    let mut i = 0;
-    while i < n {
-        while i < n && mask[i] == 0 {
-            i += 1;
-        }
-        let start = i;
-        while i < n && mask[i] != 0 {
-            i += 1;
-        }
-        if i > start {
-            runs.push((start, i - start));
+    nonzero_runs(mask, runs);
+    Some((first, n))
+}
+
+/// Exact runs of nonzero bytes, reusing `runs`. Equal gaps must stay out of copy-back writes.
+fn nonzero_runs(mask: &[u8], runs: &mut Vec<(usize, usize)>) {
+    runs.clear();
+    let mut append = |at: usize, len: usize| match runs.last_mut() {
+        Some(last) if last.0 + last.1 == at => last.1 += len,
+        _ => runs.push((at, len)),
+    };
+    let (chunks, tail) = mask.as_chunks::<8>();
+    for (index, chunk) in chunks.iter().enumerate() {
+        let word = u64::from_le_bytes(*chunk);
+        // Each byte's low seven bits plus 0x7f sets its high bit iff a low bit was set.
+        // No lane carries into the next (the sum is at most 0xfe). Including the original
+        // high bit gives an exact nonzero marker, even for arbitrary XOR bytes, not just 0xff.
+        let nonzero = (((word & 0x7f7f_7f7f_7f7f_7f7f) + 0x7f7f_7f7f_7f7f_7f7f) | word)
+            & 0x8080_8080_8080_8080;
+        // Pack the eight markers into one byte, in the same order as the input bytes.
+        let mut bits = ((nonzero >> 7).wrapping_mul(0x0102_0408_1020_4080) >> 56) as u8;
+        while bits != 0 {
+            let first = bits.trailing_zeros() as usize;
+            let len = (bits >> first).trailing_ones() as usize;
+            append(index * 8 + first, len);
+            bits &= (0xffu16 << (first + len)) as u8;
         }
     }
-    Some((first, n))
+    for (index, &byte) in tail.iter().enumerate() {
+        if byte != 0 {
+            append(chunks.len() * 8 + index, 1);
+        }
+    }
 }
 
 /// Since the last frame-rate line, of [`Shadow::merge_under_writes`]: pages
@@ -2576,7 +2595,227 @@ fn changed_runs_wide(now: &[u8], was: &[u8]) -> Vec<(usize, usize)> {
 mod merge_tests {
     use super::{
         PIECE, back_piece, changed_chunks, changed_runs, changed_runs_bytes, changed_runs_wide,
+        nonzero_runs,
     };
+
+    fn scalar_runs(mask: &[u8]) -> Vec<(usize, usize)> {
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for (at, &byte) in mask.iter().enumerate() {
+            if byte != 0 {
+                match runs.last_mut() {
+                    Some(last) if last.0 + last.1 == at => last.1 += 1,
+                    _ => runs.push((at, 1)),
+                }
+            }
+        }
+        runs
+    }
+
+    #[test]
+    fn nonzero_runs_keep_exact_boundaries_for_every_byte_value() {
+        let mut runs = Vec::new();
+        for value in 1..=255u8 {
+            for pattern in 0..=255u8 {
+                let bytes: [u8; 8] =
+                    std::array::from_fn(|i| if pattern & (1 << i) == 0 { 0 } else { value });
+                nonzero_runs(&bytes, &mut runs);
+                assert_eq!(
+                    runs,
+                    scalar_runs(&bytes),
+                    "value {value}, pattern {pattern}"
+                );
+            }
+        }
+        let bytes: Vec<u8> = (0..PIECE + 16)
+            .map(|i| if i % 37 < 9 { 0 } else { (i % 255 + 1) as u8 })
+            .collect();
+        for offset in 0..16 {
+            for len in [
+                0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, PIECE,
+            ] {
+                let mask = &bytes[offset..offset + len];
+                nonzero_runs(mask, &mut runs);
+                assert_eq!(runs, scalar_runs(mask), "offset {offset}, len {len}");
+            }
+        }
+    }
+
+    #[test]
+    fn copyback_matches_scalar_merge_with_reused_scratch_and_failed_reads() {
+        let (mut scratch, mut mask, mut runs) = (Vec::new(), Vec::new(), Vec::new());
+        let mut seed = 0x6a09_e667_f3bc_c909u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in 0..600 {
+            let n = [0, 1, 7, 8, 9, 31, 32, 33, 63, 64, 65, 257, 4096, PIECE][case % 14];
+            let old: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+            let (mut host, mut cpu) = (old.clone(), old.clone());
+            for i in 0..n {
+                if case % 7 != 0 && next() % 3 == 0 {
+                    host[i] ^= 1 + (next() % 255) as u8;
+                }
+                if next() % 3 == 0 {
+                    cpu[i] ^= 1 + (next() % 255) as u8;
+                }
+            }
+            let readable = case % 11 != 0;
+            let (mut expected_host, mut expected_title, mut expected_mask) =
+                (host.clone(), scratch.clone(), mask.clone());
+            let mut expected_runs = Vec::new();
+            let (mut expected_read, mut expected_result) = (None, None);
+            if let Some(first) = host.iter().zip(&old).position(|(h, o)| h != o) {
+                let last = host.iter().zip(&old).rposition(|(h, o)| h != o).unwrap();
+                expected_read = Some((first, last + 1 - first));
+                expected_title = vec![0; last + 1 - first];
+                if readable {
+                    expected_mask = vec![0; expected_title.len()];
+                    for at in first..=last {
+                        let merged = if host[at] != old[at] && cpu[at] == old[at] {
+                            host[at]
+                        } else {
+                            cpu[at]
+                        };
+                        expected_host[at] = merged;
+                        expected_title[at - first] = merged;
+                        expected_mask[at - first] = merged ^ cpu[at];
+                    }
+                    expected_runs = scalar_runs(&expected_mask);
+                    if !expected_runs.is_empty() {
+                        expected_result = expected_read;
+                    }
+                }
+            }
+            let mut reads = Vec::new();
+            let result = back_piece(
+                &mut host,
+                &old,
+                &mut scratch,
+                &mut mask,
+                &mut runs,
+                |first, into| {
+                    reads.push((first, into.len()));
+                    if readable {
+                        into.copy_from_slice(&cpu[first..first + into.len()]);
+                    }
+                    readable
+                },
+            );
+            assert_eq!(result, expected_result, "case {case}");
+            assert_eq!(
+                reads,
+                expected_read.into_iter().collect::<Vec<_>>(),
+                "case {case}"
+            );
+            assert_eq!(host, expected_host, "host, case {case}");
+            assert_eq!(scratch, expected_title, "title, case {case}");
+            assert_eq!(mask, expected_mask, "mask, case {case}");
+            assert_eq!(runs, expected_runs, "runs, case {case}");
+        }
+    }
+
+    #[test]
+    fn copyback_runs_preserve_a_title_write_after_the_read() {
+        let old = [0u8; 65];
+        let mut host = old;
+        host[0] = 1;
+        host[64] = 2;
+        let mut cpu = old;
+        let (mut title, mut mask, mut runs) = (Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(
+            back_piece(
+                &mut host,
+                &old,
+                &mut title,
+                &mut mask,
+                &mut runs,
+                |first, into| {
+                    into.copy_from_slice(&cpu[first..first + into.len()]);
+                    cpu[32] = 3; // a title store after the read, outside the GPU's write set
+                    true
+                }
+            ),
+            Some((0, 65))
+        );
+        for (at, n) in runs {
+            cpu[at..at + n].copy_from_slice(&title[at..at + n]);
+        }
+        assert_eq!((cpu[0], cpu[32], cpu[64]), (1, 3, 2));
+        assert!(
+            cpu.iter()
+                .enumerate()
+                .all(|(i, &b)| [0, 32, 64].contains(&i) || b == 0)
+        );
+    }
+
+    /// Measures the whole production helper with reused scratch and a synthetic title-memory
+    /// read. Includes identical input restoration each iteration; no GPU or game files needed.
+    /// Run `benchmark_copyback_pieces` alone in release mode with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "manual CPU performance measurement; compare identical cases on both revisions"]
+    fn benchmark_copyback_pieces() {
+        use std::hint::black_box;
+        for name in [
+            "unchanged",
+            "endpoints",
+            "sparse",
+            "dense",
+            "alternating",
+            "conflicts",
+        ] {
+            for n in [64, 4096, PIECE] {
+                let old: Vec<u8> = (0..n).map(|i| (i * 31 + 7) as u8).collect();
+                let (mut gpu, mut cpu) = (old.clone(), old.clone());
+                for i in 0..n {
+                    let changed = match name {
+                        "unchanged" => false,
+                        "endpoints" => i == 0 || i == n - 1,
+                        "sparse" => i % 64 == 0 || i == n - 1,
+                        "alternating" => i % 2 == 0,
+                        _ => true,
+                    };
+                    if changed {
+                        gpu[i] ^= (i % 255 + 1) as u8;
+                    }
+                    if name == "conflicts" && i % 2 == 0 {
+                        cpu[i] ^= 0xa5;
+                    }
+                }
+                let (mut host, mut title, mut mask, mut runs) =
+                    (gpu.clone(), Vec::new(), Vec::new(), Vec::new());
+                let mut one = || {
+                    host.copy_from_slice(black_box(&gpu));
+                    let result = back_piece(
+                        &mut host,
+                        &old,
+                        &mut title,
+                        &mut mask,
+                        &mut runs,
+                        |first, into| {
+                            into.copy_from_slice(&cpu[first..first + into.len()]);
+                            true
+                        },
+                    );
+                    black_box((result, &host, &title, &mask, &runs));
+                };
+                for _ in 0..100 {
+                    one();
+                }
+                let iterations = (64 * 1024 * 1024 / n).min(100_000);
+                let began = std::time::Instant::now();
+                for _ in 0..iterations {
+                    one();
+                }
+                eprintln!(
+                    "copyback: case={name} bytes={n} iterations={iterations} ns/piece={:.1}",
+                    began.elapsed().as_nanos() as f64 / iterations as f64
+                );
+            }
+        }
+    }
 
     #[test]
     fn changed_chunks_hold_every_changed_byte() {
