@@ -50,5 +50,22 @@ class AcharJogo(unittest.TestCase):
             self.assertEqual(autopilot.achar_jogo(str(pasta)), pasta / "titulo.exe")
 
 
+
+class UltimoQuadro(unittest.TestCase):
+    def test_pelo_numero_e_nao_pela_ordem_alfabetica(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            quadros = Path(tmp) / "quadros"
+            quadros.mkdir()
+            for n in (992, 6809, 1008):
+                (quadros / f"frame-{n}.png").write_bytes(b"")
+            (quadros / "before-world-ops.txt").write_text("")
+            self.assertEqual(autopilot.ultimo_quadro(Path(tmp)).name, "frame-6809.png")
+
+    def test_sem_capturas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(autopilot.ultimo_quadro(Path(tmp)))
+            self.assertIn("Sem capturas", autopilot.sem_mundo(Path(tmp)))
+
+
 if __name__ == "__main__":
     unittest.main()

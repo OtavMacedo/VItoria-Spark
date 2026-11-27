@@ -19,6 +19,8 @@ Uso:
   na pasta da sessão para `motor.py reproduzir`; `SPARK_OFFLINE=0` desliga), e `SPARK_PHASES=1` também (as fases
   de cada quadro, para o diagnóstico; `SPARK_PHASES=0` desliga).
 
+- Se o título não chega ao mundo em `SPARK_SEM_MUNDO_S` (300) segundos, `rodar` para e diz em que tela ele ficou
+  (a última captura) e como passar dela.
 - `confirmar` registra, fora do repositório, que a pessoa declarou usar a própria cópia, obtida legalmente. O
   AutoPilot não roda sem isso (docs/autopilot.md).
 - O título vem de `--jogo`, de `SPARK_JOGO` ou do `game_dir` de `victory.toml`.
@@ -166,6 +168,26 @@ def aquecer(args: list[str]) -> int:
     return r.returncode
 
 
+def ultimo_quadro(pasta: Path) -> Path | None:
+    """A captura de número mais alto em `<pasta>/quadros` (frame-<n>.png), ou None."""
+    quadros = [(int(m.group(1)), q) for q in (pasta / "quadros").glob("frame-*.png")
+               if (m := re.fullmatch(r"frame-(\d+)\.png", q.name))]
+    return max(quadros)[1] if quadros else None
+
+
+def sem_mundo(pasta: Path) -> str:
+    """O que fazer quando a execução não chegou ao mundo: a tela em que parou e como passar dela uma vez."""
+    quadro = ultimo_quadro(pasta)
+    return "\n".join([
+        "O título não chegou ao mundo: parou numa tela que as teclas do script (Enter) não passam, como a",
+        "primeira configuração de um perfil novo (tamanho do texto, legendas, avisos legais).",
+        f"Última captura: {quadro}" if quadro else "Sem capturas nesta execução.",
+        "Passe dessa tela uma vez à mão, com a janela visível e sem as teclas do script; o perfil guarda a escolha:",
+        "  python scripts/autopilot.py rodar manual-1 VICTORY_HIDDEN_WINDOW=0 VICTORY_KEYS= SPARK_SEM_MUNDO_S=0",
+        "Ou passe outras teclas por execução: VICTORY_KEYS=<segundos>:<tecla>,... (Enter, Up, Down, Left, Right, Esc).",
+    ])
+
+
 def rodar(args: list[str]) -> int:
     if not CONFIRMACAO.exists():
         sys.exit("Rode antes: python scripts/autopilot.py confirmar (docs/autopilot.md, seção Lei e limites).")
@@ -232,7 +254,8 @@ def rodar(args: list[str]) -> int:
                 silenciar()
                 time.sleep(1)
                 motivo = parada.decidir()
-                if motivo and (precisao > 0 or "teto" in motivo):
+                # Uma execução travada ou fora do mundo para mesmo sem a parada pela precisão.
+                if motivo and (precisao > 0 or "teto" in motivo or motivo.startswith(("TRAVOU", "SEM MUNDO"))):
                     fim = motivo
                     break
             fim = fim or ("saiu sozinho" if p.poll() is not None else "encerrado no tempo")
@@ -249,6 +272,8 @@ def rodar(args: list[str]) -> int:
         print(f"{nome}: execução {modo} com {carga['build_s']} s de build ao mesmo tempo")
     resumos = sorted(pasta.rglob("resumo.md"))
     print(f"{nome}: {fim} após {time.time() - inicio:.0f} s, código {p.returncode}")
+    if fim.startswith("SEM MUNDO"):
+        print(sem_mundo(pasta))
     print(parada.estado())
     motor = [sys.executable, str(RAIZ / "scripts" / "motor.py")]
     if parada.ab and resumos:
