@@ -101,6 +101,16 @@ def verificar(s: Sessao) -> list[dict]:
             out.append(_achado("cena_instavel", False,
                                f"o IC 95 % da mediana do quadro tem ±{meia:.0f} % (a cena variou muito)",
                                "preferir o A/B na execução (SPARK_AB) a comparar execuções"))
+    conc = s.concorrencia()
+    build_s = conc.get("build_s") or 0
+    if build_s > 0:
+        # Numa execução intercalada (A/B na execução) os braços dividem a carga; os números absolutos, não.
+        intercalada = conc.get("modo") == "intercalada"
+        out.append(_achado("carga_de_build", not intercalada,
+                           f"um build rodou junto com a execução por {build_s:.0f} s"
+                           + (" (execução intercalada: o A/B dela vale, os números absolutos não)" if intercalada
+                              else ""),
+                           "para números absolutos ou comparação entre execuções, repetir em modo exclusivo"))
     if r.get("ab"):
         out.append(_achado("ab_na_execucao", False,
                            "a execução alternou chaves (SPARK_AB): as fases e os problemas misturam os braços",

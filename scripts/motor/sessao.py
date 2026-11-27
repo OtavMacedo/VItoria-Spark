@@ -90,6 +90,18 @@ class Sessao:
         """A pasta dos contêineres guardados com `SPARK_OFFLINE=1` (pode não existir)."""
         return self.pasta / "offline"
 
+    def concorrencia(self) -> dict:
+        """O que rodou junto com a execução, do `concorrencia.json` que o agendador deixa na pasta de logs dela:
+        `{"modo": "exclusiva"|"intercalada", "build_s": segundos de build ao mesmo tempo}`; vazio sem o arquivo."""
+        for pasta in (self.pasta, self.pasta.parent):
+            try:
+                dados = json.loads((pasta / "concorrencia.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(dados, dict):
+                return dados
+        return {}
+
     def estavel(self) -> dict:
         return self.resumo.get("stable_scene") or {}
 

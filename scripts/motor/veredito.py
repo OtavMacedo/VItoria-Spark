@@ -85,7 +85,8 @@ def _alertas_de_medicao(v: dict, sessoes: list[Sessao], bloquear: bool) -> str |
             if a["id"] in ("falha", "dispositivo_perdido", "ab_na_execucao"):
                 continue
             v["alertas"].append(f"{s.nome}: {a['texto']}")
-            if a["grave"] and bloquear and motivo is None:
+            # Entre execuções, carga de build em qualquer uma muda o número absoluto dela, qualquer que seja o modo.
+            if (a["grave"] or a["id"] == "carga_de_build") and bloquear and motivo is None:
                 motivo = f"{s.nome}: {a['texto']}"
     return motivo
 

@@ -242,6 +242,25 @@ class Medicao(ComSessao):
         r["long_frame_causes"] = [{"cause": "remap", "frames": 2, "ms": 3000}]
         self.assertEqual(self.ids(r), {"ram_baixa": False})
 
+    def test_build_junto_invalida_numeros_absolutos_e_nao_o_ab_da_execucao(self):
+        def com(conc: dict, **mais) -> Sessao:
+            s = self.sessao(resumo(**mais))
+            (s.pasta.parent / "concorrencia.json").write_text(json.dumps(conc), encoding="utf-8")
+            return s
+        self.assertEqual(self.ids(resumo()), {})
+        ids = lambda s: {a["id"]: a["grave"] for a in medicao.verificar(s)}  # noqa: E731
+        self.assertEqual(ids(com({"modo": "exclusiva", "build_s": 0})), {})
+        self.assertEqual(ids(com({"modo": "exclusiva", "build_s": 40})), {"carga_de_build": True})
+        self.assertEqual(ids(com({"modo": "intercalada", "build_s": 40}))["carga_de_build"], False)
+        # O A/B na execução segue valendo; entre execuções, qualquer carga bloqueia.
+        s = com({"modo": "intercalada", "build_s": 40}, ab=blocos([-0.05]))
+        self.assertEqual(veredito.ab(s)["estado"], "GANHO")
+        limpo = self.sessao(resumo(), nome="limpa-sessao")
+        v = veredito.entre_execucoes([limpo, limpo], [s, limpo])
+        self.assertEqual(v["estado"], "PROBLEMA_DE_MEDICAO")
+        self.assertIn("build", v["motivo"])
+        self.assertNotEqual(veredito.entre_execucoes([limpo, limpo], [limpo, limpo])["estado"], "PROBLEMA_DE_MEDICAO")
+
     def test_caches_frios(self):
         r = resumo()
         r["stable_scene"]["windows_making_pipelines"] = 100

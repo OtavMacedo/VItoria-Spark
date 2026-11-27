@@ -69,6 +69,7 @@ num build de diagnóstico, das mensagens do log de quadros; o relatório diz iss
 | `tempestade_de_faltas` | quadros > 1 s com 5.000+ falhas de página/s e 3× a média | se passam de 10 % do tempo |
 | `ram_baixa` | RAM livre mínima abaixo de 1.024 MB | abaixo de 512 MB |
 | `cena_instavel` | IC 95 % da mediana do quadro acima de ±10 % | não |
+| `carga_de_build` | `concorrencia.json` da execução diz que um build rodou junto (`build_s` > 0) | sim, salvo execução `intercalada`; entre execuções bloqueia sempre |
 | `ab_na_execucao` | a execução alternou chaves: as fases misturam os braços | não |
 | `eventos_perdidos` | fila do log cheia | não |
 
