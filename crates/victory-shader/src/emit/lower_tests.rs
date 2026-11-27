@@ -727,3 +727,51 @@ fn cube_image_get_lod_lowers_and_validates() {
     #[cfg(not(windows))]
     let _ = lowered;
 }
+
+/// A pixel program that orders overlapping pixels reads the collision SGPR (after the user
+/// SGPRs and the primitive mask) and `src_pops_exiting_wave_id`; both lower, so the program
+/// translates instead of being refused for an unknown input.
+#[test]
+fn a_pixel_program_that_orders_overlapping_pixels_lowers() {
+    // One user SGPR at s2: the primitive mask in s3, the collision in s4.
+    // (the wait: overlapping, it compares the exiting wave id with the one it waits for)
+    let words = [
+        0x9000_9F04, // s_lshr_b32 s0, s4, 31
+        0xBF06_8000, // s_cmp_eq_u32 s0, 0
+        0xBF85_0002, // s_cbranch_scc1 past the wait
+        0x8102_01EF, // s_add_i32 s2, src_pops_exiting_wave_id, s1
+        0xBF06_8002, // s_cmp_eq_u32 s2, 0
+        S_ENDPGM,
+    ];
+    let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let native = NativeProgram {
+        stage: HwStage::Ps,
+        wave64: false,
+        vgprs: 4,
+        layout: vec![root(RootType::Table, 2, 0)],
+        used: vec![],
+        io: StageIo::Ps {
+            inputs: vec![],
+            input_addr: 0,
+            db_shader_control: 0,
+            patches: vec![],
+        },
+        code,
+    };
+    let p = ir::build(&native.code, false, 4).unwrap();
+    let st = structure::structure(&p).unwrap();
+    let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+    let io = io::raise(&p, &native).unwrap();
+    let lowered = lower(&Parts {
+        native: &native,
+        p: &p,
+        st: &st,
+        io: &io,
+        res: &res,
+        inputs: vec![],
+        outputs: vec![],
+        prims: vec![],
+        mesh_stride: 0,
+    });
+    assert!(lowered.is_ok(), "{:?}", lowered.err());
+}
