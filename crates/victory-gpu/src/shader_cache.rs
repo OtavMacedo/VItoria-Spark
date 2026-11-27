@@ -146,9 +146,10 @@ const WAVE_WIDE_DEFAULT: &[&str] = &[
     "2cc4c197ee29e291",
 ];
 
-/// Whether the container whose hash is `hash` (hex) is on [`WAVE_WIDE_DEFAULT`] or the list
-/// `VICTORY_WAVE_WIDE_ONLY` gives instead.
-fn wave_wide_listed(hash: &str) -> bool {
+/// Whether the container whose hash is `hash` (hex, the 16 digits a run's log names it by or
+/// more) is on [`WAVE_WIDE_DEFAULT`] or the list `VICTORY_WAVE_WIDE_ONLY` gives instead; the
+/// offline `translate` asks it too, so a check without the title takes the form a run takes.
+pub fn wave_wide_listed(hash: &str) -> bool {
     static LIST: OnceLock<Vec<String>> = OnceLock::new();
     let list = LIST.get_or_init(|| match std::env::var("VICTORY_WAVE_WIDE_ONLY") {
         Ok(v) => v

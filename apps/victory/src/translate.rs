@@ -492,7 +492,12 @@ fn translate(
     let before: Option<BTreeMap<String, usize>> = dump
         .as_ref()
         .map(|_| t.failed.iter().map(|(k, v)| (k.clone(), v.0)).collect());
-    translate_programs(&container, programs, &example, t, checks);
+    // The wave-wide form where a run allows it (the shader cache's list), so an offline check
+    // translates each program as the title gets it.
+    let listed = victory_gpu::shader_cache::wave_wide_listed(&hash);
+    emit::with_wave_wide(listed, || {
+        translate_programs(&container, programs, &example, t, checks)
+    });
     if let (Some(dir), Some(before)) = (dump, before) {
         for (reason, (n, _)) in &t.failed {
             let was = before.get(reason).copied().unwrap_or(0);
