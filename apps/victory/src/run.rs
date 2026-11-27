@@ -56,12 +56,15 @@ fn run_title(
     victory_hle::modules::lifecycle::wait_for_previous();
     let cfg = victory_core::Config::load()?;
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
-    let prepared = victory_loader::prepare(&original)?;
+    let mut prepared = victory_loader::prepare(&original)?;
     let hash = prepared.original_hash.to_hex();
-    match victory_game::identify(&hash) {
+    let build = victory_game::identify(&hash);
+    match build {
         Some(build) => println!("build          {} ({hash})", build.label),
         None => println!("build          unknown ({hash})"),
     }
+    let dlss = dlss_available()?;
+    apply_title_patches(&mut prepared, build, console, dlss)?;
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
@@ -137,7 +140,10 @@ fn run_title(
         show(name, dll.bind_imports(&with_dlls, policy)?);
     }
     let exe_name = exe.file_name().unwrap_or_default().to_string_lossy();
-    show(&exe_name, image.bind_imports(&with_dlls, policy)?);
+    // The title's FidelityFX calls go through ours when DLSS is on (bound as
+    // before otherwise).
+    let interposed = victory_hle::modules::fidelityfx::Interpose { inner: &with_dlls };
+    show(&exe_name, image.bind_imports(&interposed, policy)?);
     if !execute {
         println!("not executing (pass --execute to start the title)");
         return Ok(());
@@ -378,4 +384,265 @@ mod tests {
 #[cfg(not(windows))]
 pub fn run(_: &Path, _: Unimplemented, _: bool, _: bool, _: Console) -> Result<()> {
     anyhow::bail!("running titles requires Windows")
+}
+
+/// Bytes as lower-case hex.
+#[cfg(windows)]
+fn hex_str(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `VICTORY_DLSS=1` (off by default; `victory_gpu::streamline` has the
+/// other switches): Streamline is loaded before anything of the title or the
+/// host GPU, failing soft. The DLSS mode if DLSS is available.
+#[cfg(windows)]
+fn dlss_available() -> Result<Option<victory_gpu::streamline::Mode>> {
+    use victory_gpu::streamline;
+    let asked = streamline::Asked::from_env().map_err(anyhow::Error::msg)?;
+    if !asked.dlss {
+        return Ok(None);
+    }
+    let available = streamline::init(&asked);
+    println!(
+        "upscaling      DLSS {} ({}, scene at {} of the output)",
+        if available {
+            "on"
+        } else {
+            "asked, not available (see the log)"
+        },
+        asked.mode.name(),
+        asked.mode.scale()
+    );
+    Ok(available.then_some(asked.mode))
+}
+
+/// With DLSS available (`mode`): the known build's FidelityFX path patches
+/// at `mode`'s scale, checked against `prepared`'s stock bytes, or why not.
+#[cfg(windows)]
+fn upscaler_path_patches(
+    prepared: &victory_loader::PreparedImage,
+    build: Option<&victory_game::KnownBuild>,
+    mode: victory_gpu::streamline::Mode,
+) -> std::result::Result<Vec<victory_game::output::TitlePatch>, String> {
+    let sites = build
+        .and_then(|b| b.upscaler.as_ref())
+        .ok_or("the FidelityFX path of this build is not known")?;
+    let read = |rva: u32, len: usize| {
+        let at = prepared.info.rva_to_file_offset(rva)? as usize;
+        prepared.bytes.get(at..at + len).map(<[u8]>::to_vec)
+    };
+    victory_game::upscaler::upscaler_patches(sites, mode.ffx_mode(), mode.scale(), read)
+}
+
+/// The known build's code patches (`VICTORY_TITLE_PATCHES=0`: none), then
+/// any from `VICTORY_TITLE_PATCH=<rva>:<old hex>:<new hex>,...`. The old
+/// bytes must be there (another build of the title is refused), and the
+/// patched copy has a file name of its own.
+///
+/// With DLSS available (`dlss`), the title's FidelityFX path is patched in
+/// at the DLSS mode's scale ([`victory_game::upscaler`]) and the build's
+/// upscaler-choice patches are left out: they return before the path's
+/// renderer selection. The two never apply together; the log says which
+/// did. Without DLSS nothing changes.
+#[cfg(windows)]
+fn apply_title_patches(
+    prepared: &mut victory_loader::PreparedImage,
+    build: Option<&victory_game::KnownBuild>,
+    console: Console,
+    dlss: Option<victory_gpu::streamline::Mode>,
+) -> Result<()> {
+    let path = dlss.and_then(|mode| match upscaler_path_patches(prepared, build, mode) {
+        Ok(patches) => Some((mode, patches)),
+        Err(why) => {
+            println!(
+                "upscaler       the title keeps its own upscaler, DLSS has nothing to take: {why}"
+            );
+            None
+        }
+    });
+    let mut patches = Vec::new();
+    let mut names = Vec::new();
+    if std::env::var("VICTORY_TITLE_PATCHES").as_deref() != Ok("0") {
+        for p in build
+            .into_iter()
+            .flat_map(|b| b.code_patches(path.is_some()))
+        {
+            patches.push((p.rva, p.expect.to_vec(), p.write.to_vec()));
+            names.push(p.name.to_owned());
+        }
+    }
+    let spec = std::env::var("VICTORY_TITLE_PATCH").unwrap_or_default();
+    for one in spec.split(',').filter(|p| !p.trim().is_empty()) {
+        let parts: Vec<&str> = one.split(':').collect();
+        anyhow::ensure!(
+            parts.len() == 3,
+            "VICTORY_TITLE_PATCH entry is not <rva>:<old>:<new>: {one}"
+        );
+        let rva = u32::from_str_radix(parts[0].trim().trim_start_matches("0x"), 16)?;
+        patches.push((rva, from_hex(parts[1])?, from_hex(parts[2])?));
+        names.push("VICTORY_TITLE_PATCH".to_owned());
+    }
+    // The path's scene is at the DLSS mode's scale, and the temporal scene
+    // scale with it, as the stock image pairs them.
+    let scene_scale = path.as_ref().map(|(mode, _)| mode.scale());
+    let output = output_size_patches(build, console, scene_scale)?;
+    if let Some((_, _, more)) = &output {
+        for p in more {
+            patches.push((p.rva, p.expect.clone(), p.write.clone()));
+            names.push(p.name.to_owned());
+        }
+    }
+    if let Some((mode, more)) = &path {
+        let scene = (output.is_none())
+            .then(|| build.and_then(|b| b.output.as_ref()))
+            .flatten()
+            .map(|sites| victory_game::output::scene_scale_patch(sites, mode.scale()));
+        for p in more.iter().chain(&scene) {
+            patches.push((p.rva, p.expect.clone(), p.write.clone()));
+            names.push(p.name.to_owned());
+        }
+    }
+    if patches.is_empty() {
+        return Ok(());
+    }
+    // One call: every expected run is checked before any is written, and
+    // the copy's name covers the whole set.
+    prepared.patch(&patches)?;
+    if let Some((size, scene, _)) = output {
+        victory_gpu::dxgi::set_output_size(size.width, size.height);
+        println!(
+            "display        {}x{} SDR, scene {}x{}{}",
+            size.width,
+            size.height,
+            scene.width,
+            scene.height,
+            if path.is_some() {
+                " through the title's FidelityFX path (DLSS)"
+            } else {
+                ""
+            }
+        );
+    }
+    if let Some((mode, _)) = &path {
+        println!(
+            "upscaler       the title's FidelityFX path for DLSS ({}, scene at {} of the output); \
+             the upscaler-choice patches are left out",
+            mode.name(),
+            mode.scale()
+        );
+    }
+    for ((rva, old, new), name) in patches.iter().zip(names) {
+        println!(
+            "title patch    +{rva:#x} {name}: {} -> {}",
+            hex_str(old),
+            hex_str(new)
+        );
+    }
+    Ok(())
+}
+
+/// Bytes from hex digits.
+#[cfg(windows)]
+fn from_hex(s: &str) -> Result<Vec<u8>> {
+    let s = s.trim();
+    anyhow::ensure!(s.len().is_multiple_of(2), "odd hex length: {s}");
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(anyhow::Error::from))
+        .collect()
+}
+
+/// `VICTORY_OUTPUT_RESOLUTION=1080p|1440p|<W>x<H>` (16:9; off by default):
+/// a Series X output of that size instead of 3840x2160, made by the title
+/// itself, with its scene at `VICTORY_SCENE_SCALE` of it (`0.75` or `3/4`,
+/// 0.5 to 1; default 1, the scene at the output's size). Needs a known build
+/// with its output sites and the Series X profile. With DLSS's FidelityFX
+/// path, its mode's scale (`dlss_scale`) is the scene's instead. Returns the
+/// output, the scene and the patches.
+#[cfg(windows)]
+fn output_size_patches(
+    build: Option<&victory_game::KnownBuild>,
+    console: Console,
+    dlss_scale: Option<f32>,
+) -> Result<
+    Option<(
+        victory_game::output::OutputSize,
+        victory_game::output::OutputSize,
+        Vec<victory_game::output::TitlePatch>,
+    )>,
+> {
+    use victory_game::output::{OutputSize, output_patches, parse_scene_scale};
+    let Ok(asked) = std::env::var("VICTORY_OUTPUT_RESOLUTION") else {
+        return Ok(None);
+    };
+    if asked.trim().is_empty() || asked.trim() == "0" {
+        return Ok(None);
+    }
+    let size = OutputSize::parse(&asked).map_err(anyhow::Error::msg)?;
+    let scale = match std::env::var("VICTORY_SCENE_SCALE") {
+        Ok(v) if !v.trim().is_empty() => {
+            let scale = parse_scene_scale(&v).map_err(anyhow::Error::msg)?;
+            if dlss_scale.is_some() {
+                println!(
+                    "display        VICTORY_SCENE_SCALE is left out: VICTORY_DLSS_MODE sets the scene"
+                );
+            }
+            scale
+        }
+        _ => 1.0,
+    };
+    let scale = dlss_scale.unwrap_or(scale);
+    // The patched display mode is the one the title picks on a Series X.
+    anyhow::ensure!(
+        matches!(console, Console::SeriesX),
+        "VICTORY_OUTPUT_RESOLUTION needs the Series X profile"
+    );
+    let sites = build
+        .and_then(|b| b.output.as_ref())
+        .context("VICTORY_OUTPUT_RESOLUTION: the output size of this build is not known")?;
+    let patches = output_patches(sites, size, scale, scanout_reservation_bytes(size)?);
+    Ok(Some((size, size.scene(scale), patches)))
+}
+
+/// The bytes the title reserves for its two scanout buffers at `size`: two
+/// 64 KiB-aligned, tiled RGBA8 surfaces, the whole rounded up to 2 MiB as
+/// the title's allocation check expects.
+#[cfg(any(windows, test))]
+fn scanout_reservation_bytes(size: victory_game::output::OutputSize) -> Result<u32> {
+    use victory_formats::texture::{Dimension, Swizzle, Texture, TextureDesc};
+    let texture = Texture::new(&TextureDesc {
+        dimension: Dimension::Tex2d,
+        width: size.width,
+        height: size.height,
+        depth_or_array: 1,
+        mips: 1,
+        // DXGI_FORMAT_R8G8B8A8_UNORM.
+        format: 28,
+        samples: 1,
+        swizzle: Swizzle::SW_64KB_D_X,
+    })
+    .map_err(|error| anyhow::anyhow!("scanout layout: {error:?}"))?;
+    Ok(u32::try_from(
+        (texture.size.next_multiple_of(64 << 10) * 2).next_multiple_of(2 << 20),
+    )?)
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::scanout_reservation_bytes;
+    use victory_game::output::{LEGACY_CANVAS, OutputSize};
+
+    /// The stock size reproduces the stock reservation (64 MiB); smaller
+    /// outputs reserve less, in 2 MiB steps.
+    #[test]
+    fn scanout_reservations() {
+        assert_eq!(scanout_reservation_bytes(LEGACY_CANVAS).unwrap(), 64 << 20);
+        for (text, mib) in [("1440p", 30), ("1080p", 18)] {
+            let size = OutputSize::parse(text).unwrap();
+            let bytes = scanout_reservation_bytes(size).unwrap();
+            assert_eq!(bytes % (2 << 20), 0, "{text}");
+            assert!(u64::from(bytes) >= 2 * u64::from(size.width * size.height * 4));
+            assert_eq!(bytes >> 20, mib, "{text}");
+        }
+    }
 }

@@ -2156,6 +2156,17 @@ pub(crate) fn host_resource<'a>(
     Some(unsafe { &*std::ptr::from_ref(&host.texture) })
 }
 
+/// Whether `this` is one of our resources (its function table is ours),
+/// read without trusting the pointer: a title pointer that is not readable
+/// is not one.
+#[cfg(windows)]
+pub(crate) fn is_resource(this: This) -> bool {
+    let mut table = [0; size_of::<usize>()];
+    !this.is_null()
+        && crate::host::read_into(this.cast(), &mut table)
+        && usize::from_ne_bytes(table) == RESOURCE_FUNCTIONS.0.as_ptr() as usize
+}
+
 /// A title texture's host copy, shared, for a list to hold.
 #[cfg(windows)]
 pub(crate) fn host_copy(this: This) -> Option<std::sync::Arc<HostTexture>> {
