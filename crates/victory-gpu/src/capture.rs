@@ -8,11 +8,20 @@ use std::path::PathBuf;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
-/// The folder frames go to, if capturing.
+/// The folder frames go to, if capturing. It is made if missing (as
+/// `VICTORY_SHOT`'s is): the AutoPilot names a `quadros` folder inside the
+/// run's own, which nothing else makes. `None` when it cannot be made.
 pub(crate) fn folder() -> Option<&'static PathBuf> {
     static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     FOLDER
-        .get_or_init(|| std::env::var_os("VICTORY_CAPTURE").map(PathBuf::from))
+        .get_or_init(|| {
+            let folder = PathBuf::from(std::env::var_os("VICTORY_CAPTURE")?);
+            if let Err(e) = std::fs::create_dir_all(&folder) {
+                tracing::warn!(error = %e, folder = %folder.display(), "the folder for captured frames could not be made: none are saved");
+                return None;
+            }
+            Some(folder)
+        })
         .as_ref()
 }
 
