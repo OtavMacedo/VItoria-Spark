@@ -17,3 +17,8 @@ VICTORY_NO_WATCHDOG = "1"
 # resultado byte a byte. RTX 3060 12 GB, driver 616.56, cena pesada de ~4.700 desenhos, A/B na rodada em 2 sessões:
 # quadro -2,5 % (IC 95 % -3,6 a -1,4) e -3,0 % (IC -4,1 a -1,9); cópias do preparo 73 -> 58 ms; imagem igual por braço.
 VICTORY_COPY_PLAIN = "1"
+# O present entra na fila atrás das listas e o título grava o quadro seguinte enquanto preparamos este (um quadro à
+# frente no máximo). RTX 3060 12 GB, driver 616.56, cena pesada de ~4.700 desenhos: A/B na rodada, quadro -12 %
+# (IC 95 % -23 a 0, 12 pares); 4 rodadas ABBA, mediana das janelas 268/263 ms sem contra 242/246 ms com (+8,5 % de
+# fps); imagem conferida nas capturas, igual.
+VICTORY_ASYNC_PRESENT = "1"
