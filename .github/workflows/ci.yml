@@ -34,6 +34,9 @@ jobs:
             git log -1 --format=%B "$c" > msg.txt
             python scripts/verificar.py --mensagem msg.txt || { echo "commit $c"; exit 1; }
           done
+      # Unit tests of the helper scripts (standard library only, no title files).
+      - name: Script tests
+        run: python -m unittest discover -s scripts -p "teste_*.py"
       # The version and components pinned in rust-toolchain.toml.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
