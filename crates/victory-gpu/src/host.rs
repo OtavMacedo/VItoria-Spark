@@ -9374,9 +9374,7 @@ impl HostList {
 ///
 /// `VICTORY_WIDE_REFRESH=alt` (or `SPARK_AB=VICTORY_WIDE_REFRESH`):
 /// alternates inside the run in the blocks of `victory_core::ab`
-/// (`crate::switches`). Run 112 measured the switch worse, copies 52 -> 68
-/// ms, in a build whose copies went through the kernel one by one; they
-/// are plain copies with one asking ahead now.
+/// (`crate::switches`).
 fn wide_refresh() -> bool {
     crate::switches::WIDE_REFRESH.on()
 }
