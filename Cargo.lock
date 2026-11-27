@@ -687,6 +687,7 @@ version = "0.1.0"
 name = "victory-game"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "memchr",
  "zlib-rs",
 ]
