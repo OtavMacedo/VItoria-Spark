@@ -64,10 +64,12 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
 - Leia o `resumo.md` primeiro. Em issues e PRs vão só números agregados. Nunca cole log, nome de conteúdo, caminho ou
   captura.
 - Antes de abrir uma issue ou um PR, procure duplicatas (`gh issue list --label autopilot`, `gh pr list`). No máximo
-  3 issues e 1 PR por sessão. Use os modelos em `.github/`.
+  3 issues e 3 PRs por sessão. Use os modelos em `.github/`.
 - Nunca baixe, procure ou indique arquivos de jogo, chaves, firmware ou SDKs. Nunca escreva código que quebre
   criptografia ou proteção de cópia. Se encontrar algo assim no caminho, pare e avise a pessoa.
 - Sem ganho medido, não há PR: registre o resultado na issue e escolha outro alvo.
+- Entregas pequenas são relevantes: um ganho medido acima do ruído ou uma correção que funciona já vira um PR pequeno,
+  um por mudança lógica, sem esperar juntar um pacote.
 - README ("Onde estamos" e "Desempenho medido") só muda com avanço **muito relevante**: +10% de fps ou −50% de
   quadros > 1 s confirmados em 2+ execuções de cada lado, um item de "Ainda não" resolvido, ou a primeira medição de
   uma placa nova ([docs/autopilot.md](docs/autopilot.md)). No mesmo PR da mudança; nunca arredonde para cima.

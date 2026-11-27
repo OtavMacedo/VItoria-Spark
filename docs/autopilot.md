@@ -51,6 +51,10 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    Se o avanço for muito relevante (critérios abaixo), o mesmo PR atualiza o README. Se
    não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.
 
+   **Entregas pequenas valem.** Um PR pequeno com um ganho medido (mesmo que modesto, desde que acima do ruído) ou
+   com uma correção que funciona já ajuda quem usa o projeto: entregue assim que estiver provado, sem esperar juntar
+   um pacote. Um PR por mudança lógica, fácil de revisar; vários ganhos independentes viram vários PRs pequenos.
+
 ## Atualizar o README (só avanços muito relevantes)
 
 O AutoPilot atualiza a seção "Onde estamos" e a tabela "Desempenho medido" do README **no mesmo PR** da mudança,
@@ -80,7 +84,7 @@ O AutoPilot existe para melhorar software livre, não para distribuir jogos. Est
   próprio ([docs/asset-policy.md](asset-policy.md)).
 - **Só código com licença compatível.** Trazer código de outro projeto só se ele for GPL-3.0 ou compatível, com o
   autor e a origem no commit. Nunca copiar código ou documentação proprietária, como SDKs de console.
-- **Respeito ao GitHub e às pessoas:** no máximo 3 issues e 1 PR por sessão, sempre procurando duplicatas antes, sem
+- **Respeito ao GitHub e às pessoas:** no máximo 3 issues e 3 PRs pequenos por sessão, sempre procurando duplicatas antes, sem
   menções a pessoas que não estão na conversa, sem spam e sem pedir revisão repetidamente.
 - **Você responde pelo que o agente publica.** Tudo sai pela sua conta. Revise as primeiras issues e os primeiros PRs.
 
