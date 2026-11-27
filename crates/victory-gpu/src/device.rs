@@ -354,7 +354,9 @@ fn feature_levels(data: *mut c_void) -> HRESULT {
 /// pipeline, silently. What the descriptions hold is not known: the calls
 /// fail as they always did, with `out` null, and the first ones log the
 /// description's words and what its first word points at, so that the two
-/// methods can be written.
+/// methods can be written. With `SPARK_PIPELINES_X=1` each distinct
+/// description is also kept whole in the session's folder, with the blocks
+/// it names ([`keep_description`]).
 /// shortcut: not implemented. Answering `S_OK` here without making the
 /// pipeline would hand the title whatever its stack held as an object.
 extern "system" fn unknown_pipeline<const SLOT: usize>(
@@ -397,7 +399,59 @@ extern "system" fn unknown_pipeline<const SLOT: usize>(
             "a pipeline creation method that is not implemented: the title goes without this pipeline"
         );
     }
+    #[cfg(windows)]
+    if victory_core::session::pipelines_x::on() {
+        keep_description(SLOT as u16, calls, desc);
+    }
     E_NOTIMPL
+}
+
+/// Keeps the description at `desc` and the blocks it names, for working out
+/// methods 0x1c8 and 0x218 away from the title (`SPARK_PIPELINES_X=1`). Its
+/// size is not known, so the most of 512, 256 or 128 bytes that reads is
+/// kept. A word that could be a title address followed by a size of 1 MiB
+/// or less is read as a block; what does not read is left out.
+#[cfg(windows)]
+fn keep_description(slot: u16, calls: u32, desc: *const u8) {
+    use victory_core::session::pipelines_x::{Block, record};
+    const LARGEST_BLOCK_BYTES: u64 = 1 << 20;
+    // Title addresses sit between the first 64 KiB and the top of user space.
+    const TITLE_ADDRESSES: std::ops::Range<u64> = 0x1_0000..0x8000_0000_0000;
+    if desc.is_null() {
+        return;
+    }
+    let Some(bytes) = [512usize, 256, 128].into_iter().find_map(|len| {
+        let mut b = vec![0u8; len];
+        crate::host::read_into(desc, &mut b).then_some(b)
+    }) else {
+        return;
+    };
+    let words: Vec<u64> = bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|w| u64::from_le_bytes(*w))
+        .collect();
+    let mut read = Vec::new();
+    for (word, pair) in words.windows(2).enumerate() {
+        let (address, size) = (pair[0], pair[1]);
+        if !TITLE_ADDRESSES.contains(&address) || size == 0 || size > LARGEST_BLOCK_BYTES {
+            continue;
+        }
+        let mut b = vec![0u8; size as usize];
+        if crate::host::read_into(address as *const u8, &mut b) {
+            read.push((word, address, b));
+        }
+    }
+    let blocks: Vec<Block> = read
+        .iter()
+        .map(|(word, address, bytes)| Block {
+            word: *word,
+            address: *address,
+            bytes,
+        })
+        .collect();
+    record(slot, calls, &bytes, &blocks);
 }
 
 /// IUnknown 3, object methods 4, device methods 76 (0x18-0x290), then the

@@ -29,6 +29,7 @@ pub mod drops;
 mod json;
 pub mod offline;
 pub mod phases;
+pub mod pipelines_x;
 pub mod summary;
 pub mod system;
 
