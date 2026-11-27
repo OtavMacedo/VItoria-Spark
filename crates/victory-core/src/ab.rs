@@ -195,13 +195,29 @@ pub fn arm_of(block: u32) -> u8 {
     (block.count_ones() & 1) as u8
 }
 
+/// The bits of a block's number whose parity is factor `factor`'s level.
+/// Factor 0 takes them all (the Thue-Morse arm of a plan of one). The
+/// others leave out bit 0, so blocks 2j and 2j+1 differ in factor 0 alone;
+/// from the third on each also leaves out a bit of its own, which keeps
+/// the factors apart while every one of them still changes level after
+/// four blocks at most. A factor that held its level for `2^f` blocks
+/// would take a slow drift of the scene for an effect of its own.
+fn level_bits(factor: u8) -> u32 {
+    match factor {
+        0 => !0,
+        1 => !1,
+        f => !(1 | 1 << f),
+    }
+}
+
 /// The cell of block `block` in a plan of `factors` factors: bit `f` is
-/// the Thue-Morse arm of `block >> f`. Factor 0 alternates as a plan of
-/// one does, and every run of `2^factors` blocks that starts at a multiple
-/// of that holds each cell once, so the factors are balanced against one
-/// another and each against a slow drift.
+/// factor `f`'s level, the parity of the block's [`level_bits`]. Every run
+/// of `2^factors` blocks that starts at a multiple of that holds each cell
+/// once, so the factors are balanced against one another.
 pub fn cell_of(block: u32, factors: u8) -> u8 {
-    (0..factors.clamp(1, MAX_FACTORS as u8)).fold(0, |cell, f| cell | arm_of(block >> f) << f)
+    (0..factors.clamp(1, MAX_FACTORS as u8)).fold(0, |cell, f| {
+        cell | (((block & level_bits(f)).count_ones() & 1) as u8) << f
+    })
 }
 
 /// What a presented frame ran under.
@@ -689,10 +705,29 @@ mod tests {
                 assert_eq!(seen, all, "{factors} factors from block {start}");
             }
         }
-        // Factor 0 is the arm of a plan of one.
+        // Factor 0 is the arm of a plan of one, and the only one to change
+        // between the two blocks of a pair.
         for block in 0..64 {
             assert_eq!(cell_of(block, 4) & 1, arm_of(block));
             assert_eq!(cell_of(block, 1), arm_of(block));
+            assert_eq!(cell_of(2 * block, 5) ^ cell_of(2 * block + 1, 5), 1);
+        }
+    }
+
+    #[test]
+    fn no_factor_holds_a_level_for_long() {
+        for f in 0..MAX_FACTORS as u8 {
+            let (mut run, mut longest) = (1, 1);
+            for block in 1..4096u32 {
+                let level = |b| cell_of(b, MAX_FACTORS as u8) >> f & 1;
+                run = if level(block) == level(block - 1) {
+                    run + 1
+                } else {
+                    1
+                };
+                longest = longest.max(run);
+            }
+            assert!(longest <= 4, "factor {f}: {longest} blocks at one level");
         }
     }
 

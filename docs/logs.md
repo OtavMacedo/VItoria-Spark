@@ -165,7 +165,8 @@ opção dos dois jeitos, em blocos alternados da mesma cena:
 
 `SPARK_AB=VICTORY_X*VICTORY_Y*VICTORY_Z` faz de cada lado do `*` um fator (até 5; `+` continua juntando chaves que
 mudam juntas). Cada bloco roda uma combinação dos níveis, de modo que todo bloco informa todos os fatores: três
-chaves são julgadas numa execução pouco mais longa que a de uma. O `ab` do `resumo.json` ganha `factors` (cada fator
+chaves são julgadas numa execução pouco mais longa que a de uma. Nenhum fator fica mais de 4 blocos seguidos no
+mesmo nível (a regra dos níveis está em [motor.md](motor.md)). O `ab` do `resumo.json` ganha `factors` (cada fator
 como `CHAVE=a/b`) e cada bloco de `block_stats` ganha `cell` (bit `f` = nível do fator `f`; `arm` continua sendo o
 nível do fator 0). As capturas viram `frame-N-c<célula>.png`. A seção "A/B na rodada" do `resumo.md` mostra só os
 dois níveis do 1º fator; o efeito de cada fator, com intervalo e interações, sai de `python scripts/motor.py ab

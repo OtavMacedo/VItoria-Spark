@@ -60,12 +60,20 @@ def resumo(**mais) -> dict:
     return r
 
 
+def celula_do_bloco(bloco: int, fatores: int) -> int:
+    """A célula do bloco, como `victory_core::ab::cell_of`: o bit f é a paridade dos bits do bloco que o fator f
+    olha (todos; todos menos o 0; daí em diante, todos menos o 0 e o f)."""
+    def bits(f: int) -> int:
+        return ~0 if f == 0 else ~1 if f == 1 else ~(1 | 1 << f)
+    return sum((bin(bloco & bits(f) & 0xFFFFFFFF).count("1") & 1) << f for f in range(fatores))
+
+
 def blocos(efeitos: list[float], n: int = 48, ruido: float = 0.01, base: float = 100.0) -> dict:
     """Um A/B (ou fatorial) sintético: `efeitos[f]` é o efeito log do fator f; deriva lenta e ruído fixo."""
     k = len(efeitos)
     semente, lista = 12345, []
     for i in range(n):
-        celula = sum((bin(i >> f).count("1") & 1) << f for f in range(k))
+        celula = celula_do_bloco(i, k)
         semente = (semente * 1103515245 + 12345) % 2**31
         jitter = (semente / 2**31 - 0.5) * 2 * ruido
         y = math.log(base) + 0.002 * i + jitter + sum(e for f, e in enumerate(efeitos) if celula >> f & 1)
