@@ -13,6 +13,8 @@ pub(super) struct Meter {
     logged: std::time::Instant,
     /// The caption the window had, once read.
     caption: Option<Vec<u16>>,
+    /// What each frame was made of, for the session log.
+    phases: crate::phases::Reader,
 }
 
 impl Meter {
@@ -26,14 +28,16 @@ impl Meter {
             drawn: crate::draw::drawn(),
             logged: now,
             caption: None,
+            phases: crate::phases::Reader::new(),
         }
     }
 
     /// Counts a presented frame.
     pub(super) fn frame(&mut self, hwnd: HWND) {
-        victory_core::session::frame_presented(crate::framelog::total(
-            crate::framelog::T::Submissions,
-        ));
+        victory_core::session::frame_presented_parts(
+            crate::framelog::total(crate::framelog::T::Submissions),
+            self.phases.frame().as_ref(),
+        );
         #[cfg(feature = "diagnostics")]
         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
         #[cfg(feature = "diagnostics")]
@@ -76,7 +80,12 @@ impl Meter {
             draws,
             dropped,
             world: false,
+            copies_mb: copy_mb,
+            textures_mb: texture_mb,
+            copy_back_mb: back_mb,
+            making: crate::pipeline::making() as f64,
         });
+        let drop_causes = crate::draw::take_drop_causes().map(|n| n as f64 / frames);
         let indirect = crate::list::take_indirect() as f64 / frames;
         let mesh_largest = MESH_GROUPS[0].swap(0, Ordering::Relaxed);
         let mesh_groups = MESH_GROUPS[1].swap(0, Ordering::Relaxed) as f64 / frames;
@@ -285,6 +294,23 @@ impl Meter {
                     per_frame(4) / 1e6,
                     per_frame(5),
                     per_frame(6) / 1e3
+                );
+            }
+            self.phases.line();
+            if dropped > 0.0 {
+                use victory_core::session::drops::DropCause as C;
+                let cause = |c: C| drop_causes[c as usize];
+                tracing::info!(
+                    spark.kind = "draws_dropped",
+                    spark.being_made = cause(C::BeingMade),
+                    spark.untranslated = cause(C::Untranslated),
+                    spark.refused = cause(C::Refused),
+                    spark.no_pipeline = cause(C::NoPipeline),
+                    spark.builder_off = cause(C::BuilderOff),
+                    spark.unbound = cause(C::Unbound),
+                    spark.skipped = cause(C::Skipped),
+                    spark.other = cause(C::Other),
+                    "draws and dispatches not run on the host, per frame, by cause"
                 );
             }
             tracing::info!(

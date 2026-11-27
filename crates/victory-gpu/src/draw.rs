@@ -10,6 +10,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use victory_core::session::drops::{DROP_CAUSES, DropCause};
 use victory_shader::resource::RootIndexedView;
 use victory_shader::{ResourceType, RootType, UsedResource};
 
@@ -1026,6 +1027,21 @@ pub(crate) fn take_frame() -> Vec<String> {
 /// (no host pipeline) since the last call.
 pub(crate) fn take_dropped() -> u64 {
     DROPPED.swap(0, Ordering::Relaxed)
+}
+
+/// [`DROPPED`] by cause, for the session log's `draws_dropped` event.
+static DROP_CAUSES_COUNT: [AtomicU64; DROP_CAUSES] = [const { AtomicU64::new(0) }; DROP_CAUSES];
+
+/// Counts a draw or dispatch not run on the host, and why. Off the path
+/// of work that runs: two atomic adds where nothing is drawn.
+fn count_drop(cause: DropCause) {
+    DROPPED.fetch_add(1, Ordering::Relaxed);
+    DROP_CAUSES_COUNT[cause as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The drops by cause since the last call, by [`DropCause`] as an index.
+pub(crate) fn take_drop_causes() -> [u64; DROP_CAUSES] {
+    std::array::from_fn(|i| DROP_CAUSES_COUNT[i].swap(0, Ordering::Relaxed))
 }
 /// A root SRV's dynamic slot in a list, and the host copy it shows.
 type RootSlot = (u32, Option<std::sync::Arc<crate::shadow::Shadow>>);
@@ -3659,7 +3675,7 @@ impl State {
         self.gather_ends(list, true);
         #[cfg(feature = "diagnostics")]
         if crate::pipeline::is_skipped(self.pipeline as This) {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(DropCause::Skipped);
             crate::pipeline::note_drop(self.pipeline as This);
             return;
         }
@@ -3674,7 +3690,7 @@ impl State {
         }
         // The ray-tracing structure builder's stages run all or none.
         if crate::pipeline::is_builder(self.pipeline as This) && !crate::pipeline::builder_runs() {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(DropCause::BuilderOff);
             #[cfg(feature = "diagnostics")]
             {
                 crate::pipeline::note_why(
@@ -3689,7 +3705,7 @@ impl State {
                 pipeline = format_args!("{:#x}", self.pipeline),
                 "a dispatch without a host pipeline dropped"
             );
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(crate::pipeline::drop_cause(self.pipeline as This));
             #[cfg(feature = "diagnostics")]
             {
                 crate::pipeline::note_drop(self.pipeline as This);
@@ -3719,7 +3735,7 @@ impl State {
         let bound = self.bind(list, p, true);
         self.dispatch_spread = [0, 0];
         if !bound {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(DropCause::Unbound);
             // A stage of the structure builder that cannot be bound is a
             // dropped stage: the others stop too.
             if crate::pipeline::is_builder(self.pipeline as This) {
@@ -4085,7 +4101,7 @@ impl State {
                 Err(_) => false,
             };
         if !ran {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(crate::pipeline::drop_cause(self.pipeline as This));
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -4576,7 +4592,7 @@ impl State {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(crate::pipeline::drop_cause(self.pipeline as This));
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -4678,7 +4694,7 @@ impl State {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
-            DROPPED.fetch_add(1, Ordering::Relaxed);
+            count_drop(crate::pipeline::drop_cause(self.pipeline as This));
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }

@@ -113,6 +113,11 @@ pub enum T {
     RemapNotesUs,
     RemapCuts,
     RemapCutBytes,
+    /// The system's write watch asked which pages were written: time in
+    /// the calls, the calls, and the 4 KiB pages they covered.
+    WatchUs,
+    WatchCalls,
+    WatchPages,
     Count,
 }
 

@@ -20,12 +20,15 @@
 //! Fields named `spark.*` are for these files: the console log does not
 //! show them (`crate::logging`), and `spark.kind` marks an event the
 //! summary reads (`frame_rate`, `pipeline_refused`, `shader_untranslated`,
-//! `device_lost`, `video_memory`, `adapter`).
+//! `device_lost`, `video_memory`, `adapter`, `draws_dropped`,
+//! `driver_cache`; `frame_phases` is for the file alone).
 
 mod ab;
 pub mod anon;
+pub mod drops;
 mod json;
 pub mod offline;
+pub mod phases;
 pub mod summary;
 pub mod system;
 
@@ -215,6 +218,20 @@ fn start_in(base: &Path, build: BuildInfo, game_dir: Option<&Path>) -> Option<Pa
     ACTIVE.store(true, Relaxed);
     let shown = session.anon.apply(&dir.to_string_lossy()).into_owned();
     tracing::info!(dir = %shown, "session log (eventos.jsonl, resumo.md)");
+    // Walking the drivers' cache folders takes a moment on a slow disk:
+    // not on the thread that starts the title.
+    let _ = std::thread::Builder::new()
+        .name("spark-driver-cache".into())
+        .spawn(|| {
+            if let Some((mb, files)) = system::driver_cache() {
+                tracing::info!(
+                    spark.kind = "driver_cache",
+                    spark.mb = mb,
+                    spark.files = files,
+                    "the card drivers' shader caches hold {mb} MB in {files} files"
+                );
+            }
+        });
     Some(dir)
 }
 
@@ -596,13 +613,19 @@ fn writer(rx: Receiver<Msg>, mut file: Option<std::io::BufWriter<std::fs::File>>
 /// This is also where a run's alternating switches change arm
 /// (`crate::ab`), with or without a session.
 pub fn frame_presented(submissions: u64) {
+    frame_presented_parts(submissions, None);
+}
+
+/// [`frame_presented`] with what the frame that ended was made of
+/// ([`phases::FrameParts`]), for the summary's phases: the same one lock.
+pub fn frame_presented_parts(submissions: u64, parts: Option<&phases::FrameParts>) {
     let tag = crate::ab::frame_presented();
     if let Some(s) = active() {
         let now = s.now_s();
         s.summary
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .present_tagged(now, submissions, tag);
+            .present_parts(now, submissions, tag, parts);
     }
 }
 

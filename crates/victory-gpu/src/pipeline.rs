@@ -556,6 +556,17 @@ pub(crate) fn host_pipeline_for<'a>(
     make::ready(p)
 }
 
+/// Why a draw or dispatch of `this` has no host pipeline to run with, for
+/// the session log's count of drops by cause. `Other` if it has one: the
+/// drop came after the pipeline, in the draw's own preparation.
+#[cfg(windows)]
+pub(crate) fn drop_cause(this: This) -> victory_core::session::drops::DropCause {
+    if this.is_null() {
+        return victory_core::session::drops::DropCause::NoPipeline;
+    }
+    make::drop_cause(&pipeline(this).host)
+}
+
 /// Host pipelines queued and not made yet.
 #[cfg(windows)]
 pub(crate) fn making() -> u64 {

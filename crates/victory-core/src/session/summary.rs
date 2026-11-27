@@ -10,7 +10,9 @@ use std::fmt::Write;
 use crate::ab::Tag;
 
 use super::ab::AbStats;
+use super::drops::{DROP_CAUSES, DROP_NAMES, DropTally};
 use super::json::{self, Obj};
+use super::phases::{FrameParts, PhaseStats};
 
 /// Host submissions between two presents from which a frame is one of the
 /// world (the title's menus and loading screens send two or three; the
@@ -26,6 +28,11 @@ const MAX_KEYS: usize = 512;
 const MAX_SAMPLES: usize = 17_280;
 /// Rows in each top list.
 const TOP: usize = 10;
+/// Shaders that do not translate listed by hash; more are only counted.
+const MAX_UNTRANSLATED: usize = 64;
+/// Page faults a second from which a long frame with no part to blame is
+/// blamed on paging.
+const PAGING_FAULTS_PER_S: f64 = 5000.0;
 /// Draws a frame from which the scene is the stable one measured (the
 /// world drawn whole, not a loading or half-loaded scene), unless
 /// `SPARK_STABLE_DRAWS` says another.
@@ -210,6 +217,13 @@ pub struct Rate {
     pub draws: f64,
     pub dropped: f64,
     pub world: bool,
+    /// Megabytes a frame: copied for submissions, uploaded as textures,
+    /// copied back.
+    pub copies_mb: f64,
+    pub textures_mb: f64,
+    pub copy_back_mb: f64,
+    /// Host pipelines queued and not made when the line was written.
+    pub making: f64,
 }
 
 /// Counts by key, with a detail kept from the first time and how many
@@ -337,6 +351,20 @@ pub struct Summary {
     /// The meter's one-second windows of the stable scene that met the
     /// rule's draws.
     stable_windows: Vec<Rate>,
+    /// Of them, those with host pipelines still being made: frames of a
+    /// scene whose caches were not warm.
+    stable_making_windows: u64,
+    /// The world's frames by part.
+    phases: PhaseStats,
+    /// Dropped draws by cause: the `draws_dropped` event waiting for its
+    /// frame-rate line, and the lines of the world.
+    pending_drops: Option<[f32; DROP_CAUSES]>,
+    drops: DropTally,
+    /// Shaders that do not translate: hash, stage and what stopped them.
+    untranslated_shaders: Vec<(String, String, String)>,
+    /// The card driver's shader cache when the run started: megabytes
+    /// and files.
+    driver_cache: Option<(f64, f64)>,
 }
 
 /// What a message says with its numbers taken out, so that one warning
@@ -434,6 +462,9 @@ fn medians_of(world: bool, rates: &[&Rate]) -> Medians {
         copy_back: m(|r| r.copy_back),
         draws: m(|r| r.draws),
         dropped: m(|r| r.dropped),
+        copies_mb: m(|r| r.copies_mb),
+        textures_mb: m(|r| r.textures_mb),
+        copy_back_mb: m(|r| r.copy_back_mb),
     }
 }
 
@@ -451,6 +482,9 @@ pub struct Medians {
     pub copy_back: Option<f64>,
     pub draws: Option<f64>,
     pub dropped: Option<f64>,
+    pub copies_mb: Option<f64>,
+    pub textures_mb: Option<f64>,
+    pub copy_back_mb: Option<f64>,
 }
 
 impl Summary {
@@ -476,6 +510,18 @@ impl Summary {
     /// [`Summary::present`] for a run whose switches alternate: `tag` is
     /// what the frame that ended ran under (`crate::ab`).
     pub fn present_tagged(&mut self, now_s: f64, submissions: u64, tag: Option<Tag>) {
+        self.present_parts(now_s, submissions, tag, None);
+    }
+
+    /// [`Summary::present_tagged`] with what the frame that ended was made
+    /// of, when the presenter measured it.
+    pub fn present_parts(
+        &mut self,
+        now_s: f64,
+        submissions: u64,
+        tag: Option<Tag>,
+        parts: Option<&FrameParts>,
+    ) {
         self.tick(now_s);
         let Some((then, before)) = self.last_present.replace((now_s, submissions)) else {
             return;
@@ -486,6 +532,13 @@ impl Summary {
         let stable = world && self.stable_from_s.is_some();
         if stable {
             self.stable.add(ms);
+        }
+        if let Some(parts) = parts
+            && world
+            && self.first_world_s.is_some()
+        {
+            let paging = self.fault_rate > PAGING_FAULTS_PER_S;
+            self.phases.frame(ms, stable, ms > LONG_MS, paging, parts);
         }
         if let Some(tag) = tag {
             self.ab_last = tag.exp;
@@ -541,6 +594,7 @@ impl Summary {
             && self.stable_windows.len() < MAX_SAMPLES
         {
             self.stable_windows.push(rate);
+            self.stable_making_windows += u64::from(rate.making > 0.0);
         }
         if let Some((_, ab)) = self.ab.get_mut(self.ab_last) {
             ab.window(rate);
@@ -635,6 +689,12 @@ impl Summary {
                 );
                 let hash = e.text("hash").unwrap_or_default();
                 let stage = e.text("stage").unwrap_or_default();
+                if self.untranslated_shaders.len() < MAX_UNTRANSLATED
+                    && !self.untranslated_shaders.iter().any(|(h, _, _)| *h == hash)
+                {
+                    self.untranslated_shaders
+                        .push((hash.clone(), stage.clone(), what.clone()));
+                }
                 if let Some(row) = self.untranslated.add(&what, now_s, |r| {
                     r.detail = e.text("error").unwrap_or_default();
                 }) && row.others.len() < 4096
@@ -662,6 +722,17 @@ impl Summary {
                     self.vram_budget_min_mb =
                         Some(self.vram_budget_min_mb.map_or(b, |m: f64| m.min(b)));
                 }
+            }
+            Some("draws_dropped") => {
+                self.pending_drops = Some(std::array::from_fn(|i| {
+                    e.num(&format!("spark.{}", DROP_NAMES[i])).unwrap_or(0.0) as f32
+                }));
+            }
+            Some("driver_cache") => {
+                self.driver_cache = Some((
+                    e.num("spark.mb").unwrap_or(0.0),
+                    e.num("spark.files").unwrap_or(0.0),
+                ));
             }
             Some("adapter") => {
                 self.adapter = e
@@ -692,6 +763,11 @@ impl Summary {
         let world = self.window_frames > 0 && self.window_world * 2 >= self.window_frames;
         (self.window_frames, self.window_world) = (0, 0);
         self.pipelines_making_max = self.pipelines_making_max.max(n("spark.making"));
+        if let Some(drops) = self.pending_drops.take()
+            && world
+        {
+            self.drops.add(drops);
+        }
         if self.rates.len() >= MAX_SAMPLES {
             return;
         }
@@ -706,6 +782,10 @@ impl Summary {
             draws: n("spark.draws"),
             dropped: n("spark.dropped"),
             world,
+            copies_mb: n("spark.copies_mb"),
+            textures_mb: n("spark.textures_mb"),
+            copy_back_mb: n("spark.copy_back_mb"),
+            making: n("spark.making"),
         });
     }
 
@@ -754,7 +834,25 @@ impl Summary {
             );
         }
         let draws = m.draws.unwrap_or(0.0);
-        let dropped = m.dropped.unwrap_or(0.0);
+        let mut dropped = m.dropped.unwrap_or(0.0);
+        // Work left out on purpose is not a fault of pipelines or shaders.
+        if let Some((faults, on_purpose)) = self.drops.split() {
+            if on_purpose >= 5.0 {
+                let causes: Vec<String> = self
+                    .drops
+                    .top()
+                    .iter()
+                    .filter(|(name, _, _)| super::drops::on_purpose(name))
+                    .map(|(name, median, _)| format!("{name} {median:.0}"))
+                    .collect();
+                out.push(format!(
+                    "**Trabalho deixado de fora de propósito**: {on_purpose:.0} por quadro por escolha dos ajustes \
+                     ({}); não é falha de tradução. Ver `dropped_by_cause` no resumo.json.",
+                    causes.join(", ")
+                ));
+            }
+            dropped = faults;
+        }
         if dropped >= 5.0 || (draws > 0.0 && dropped / draws >= 0.01) {
             let mut s = format!(
                 "**Draws descartados**: {dropped:.0} por quadro sem pipeline do host (de {draws:.0}). Corrigir as \
@@ -871,6 +969,9 @@ impl Summary {
                 .opt_num("copy_back_ms", m.copy_back)
                 .opt_num("draws", m.draws)
                 .opt_num("dropped", m.dropped)
+                .opt_num("copies_mb", m.copies_mb)
+                .opt_num("textures_mb", m.textures_mb)
+                .opt_num("copy_back_mb", m.copy_back_mb)
                 .finish()
         };
         let medians = medians_json(self.medians());
@@ -881,6 +982,26 @@ impl Summary {
             .opt_num("from_s", self.stable_from_s)
             .raw("frames", &pct(&self.stable))
             .raw("window_medians", &medians_json(self.stable_medians()))
+            .int("windows_making_pipelines", self.stable_making_windows)
+            .finish();
+        let untranslated_shaders =
+            json::array(self.untranslated_shaders.iter().map(|(hash, stage, what)| {
+                Obj::new()
+                    .str("hash", hash)
+                    .str("stage", stage)
+                    .str("instruction", what)
+                    .finish()
+            }));
+        let measurement = Obj::new()
+            .opt_num(
+                "device_create_ms",
+                self.adapter
+                    .iter()
+                    .find(|(k, _)| k == "create_ms")
+                    .and_then(|(_, v)| v.parse().ok()),
+            )
+            .opt_num("driver_cache_mb", self.driver_cache.map(|c| c.0))
+            .opt_num("driver_cache_files", self.driver_cache.map(|c| c.1))
             .finish();
         let tally = |t: &Tally, others: bool| {
             json::array(t.top(TOP).into_iter().map(|(k, r)| {
@@ -947,6 +1068,12 @@ impl Summary {
             .int("long_world_frames_over_1s", self.long_world_frames)
             .raw("frame_rate_medians", &medians)
             .raw("stable_scene", &stable)
+            .raw("phases", &self.phases.to_json())
+            .raw("phases_world", &self.phases.world_json())
+            .raw("long_frame_causes", &self.phases.long_json())
+            .raw("dropped_by_cause", &self.drops.to_json())
+            .raw("untranslated_shaders", &untranslated_shaders)
+            .raw("measurement", &measurement)
             .raw(
                 "ab",
                 &self
@@ -1133,6 +1260,19 @@ impl Summary {
                 self.pipelines_making_max
             );
         }
+        let causes = self.drops.top();
+        if !causes.is_empty() {
+            let text: Vec<String> = causes
+                .iter()
+                .map(|(name, median, max)| format!("{name} {median:.0} (máx {max:.0})"))
+                .collect();
+            let _ = writeln!(
+                s,
+                "\nDescartados por causa, por quadro: {}.",
+                text.join(", ")
+            );
+        }
+        s.push_str(&self.phases.to_markdown());
         for (i, (name, ab)) in self.ab.iter().enumerate() {
             let md = ab.to_markdown();
             if self.ab.len() > 1 {
@@ -1261,7 +1401,7 @@ impl Summary {
         }
         let _ = writeln!(
             s,
-            "\n---\nDetalhes: `eventos.jsonl` nesta pasta (um JSON por linha; filtre por `target`/`level`). Guia: docs/logs.md."
+            "\n---\nDiagnóstico completo (problemas em ordem, com a correção sugerida de cada um): `python scripts/motor.py diagnosticar <esta pasta>`.\nDetalhes: `eventos.jsonl` nesta pasta (um JSON por linha; filtre por `target`/`level`). Guia: docs/logs.md."
         );
         s
     }
@@ -1294,6 +1434,69 @@ mod tests {
             message: "frame rate",
             fields,
         }
+    }
+
+    #[test]
+    fn frames_with_parts_drops_by_cause_and_the_driver_cache_reach_the_summary() {
+        use super::super::drops::DropCause;
+        use super::super::phases::Phase;
+        let mut s = Summary::new();
+        let mut parts = FrameParts::default();
+        parts.us[Phase::Remap as usize] = 30_000;
+        parts.us[Phase::Gpu as usize] = 10_000;
+        let (mut t, mut subs) = (0.0, 0);
+        for _ in 0..60 {
+            subs += 12;
+            s.present_parts(t, subs, None, Some(&parts));
+            t += 0.05;
+        }
+        let mut drops = vec![("spark.kind", Value::Str("draws_dropped".into()))];
+        drops.push(("spark.builder_off", Value::F64(380.0)));
+        drops.push(("spark.refused", Value::F64(2.0)));
+        s.event(t, &info(&drops));
+        s.event(t, &info(&rate(20.0, 18.0, 10.0, 382.0)));
+        let cache = [
+            ("spark.kind", Value::Str("driver_cache".into())),
+            ("spark.mb", Value::U64(31_000)),
+            ("spark.files", Value::U64(12)),
+        ];
+        s.event(t, &info(&cache));
+        let adapter = [
+            ("spark.kind", Value::Str("adapter".into())),
+            ("spark.create_ms", Value::U64(45_000)),
+        ];
+        s.event(t, &info(&adapter));
+        assert_eq!(DropCause::Other as usize, DROP_CAUSES - 1);
+
+        let json = s.to_json("{}");
+        assert!(
+            json.contains(r#""phases":{"scope":"world","frames":50,"#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#"{"cause":"builder_off","per_frame_median":380,"#),
+            "{json}"
+        );
+        assert!(
+            json.contains(
+                r#""measurement":{"device_create_ms":45000,"driver_cache_mb":31000,"driver_cache_files":12}"#
+            ),
+            "{json}"
+        );
+        // 380 of the 382 drops are a setting's choice: the two refused ones
+        // alone do not make dropped draws the target.
+        let targets = s.next_targets().join("\n");
+        assert!(targets.contains("(builder_off 380); não"), "{targets}");
+        assert!(!targets.contains("**Draws descartados**"), "{targets}");
+        let md = s.to_markdown(&[]);
+        assert!(
+            md.contains("## Fases do quadro (50 quadros do mundo"),
+            "{md}"
+        );
+        assert!(
+            md.contains("Descartados por causa, por quadro: builder_off 380"),
+            "{md}"
+        );
     }
 
     /// A synthetic run: 20 s of menus, then a minute of world frames at

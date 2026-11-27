@@ -1502,11 +1502,26 @@ fn create() -> windows::core::Result<Host> {
     }
 }
 
+/// When the title first asked for its device.
+static DEVICE_ASKED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// The title asks for its device: the time from here to the host device
+/// being ready is the adapter event's `spark.create_ms`. Tens of seconds
+/// there mean the driver is in a state (a bloated shader cache, mostly)
+/// in which a run's numbers are not to be trusted.
+pub(crate) fn device_asked() {
+    let _ = DEVICE_ASKED.set(std::time::Instant::now());
+}
+
 /// The host adapter for the session log's summary (`spark.kind =
-/// "adapter"`): its name, driver version, own memory and widest wave. The
-/// console line says only that the device is made, as before.
+/// "adapter"`): its name, driver version, own memory and widest wave, and
+/// how long the device took to make. The console line says only that the
+/// device is made, as before.
 fn log_adapter(adapter: Option<&IDXGIAdapter3>, wave_max: Option<u32>) {
     let Some(adapter) = adapter else { return };
+    let create_ms = DEVICE_ASKED
+        .get()
+        .map_or(0, |asked| asked.elapsed().as_millis() as u64);
     // SAFETY: plain queries on a live adapter.
     let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
         return;
@@ -1536,6 +1551,7 @@ fn log_adapter(adapter: Option<&IDXGIAdapter3>, wave_max: Option<u32>) {
         spark.driver = %driver,
         spark.vram_mb = (desc.DedicatedVideoMemory >> 20) as u64,
         spark.wave_max = wave_max.unwrap_or(0),
+        spark.create_ms = create_ms,
         "host adapter"
     );
 }

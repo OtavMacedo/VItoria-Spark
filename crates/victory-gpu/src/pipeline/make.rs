@@ -124,6 +124,26 @@ impl Pending {
     }
 }
 
+/// Why a pipeline has no host pipeline, as one of the session log's
+/// causes of dropped work (`Other` if it has one).
+pub(crate) fn drop_cause(p: &Pending) -> victory_core::session::drops::DropCause {
+    use victory_core::session::drops::DropCause;
+    match p.made.get() {
+        Some(Some(_)) => DropCause::Other,
+        None => DropCause::BeingMade,
+        Some(None) => {
+            if p.shaders
+                .iter()
+                .any(|s| matches!(s.translated.get(), Some(None)))
+            {
+                DropCause::Untranslated
+            } else {
+                DropCause::Refused
+            }
+        }
+    }
+}
+
 /// Why a pipeline has no host pipeline (diagnostics): its shaders that do
 /// not translate, else "refused" or "being made"; `None` if it has one.
 #[cfg(feature = "diagnostics")]

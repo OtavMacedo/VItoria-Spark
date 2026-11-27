@@ -85,6 +85,50 @@ pub fn memory_mb() -> Option<(u64, u64)> {
     None
 }
 
+/// The folders card drivers keep their shader caches in, under the
+/// user's own folders: (environment variable, path below it).
+const DRIVER_CACHES: [(&str, &str); 5] = [
+    ("LOCALAPPDATA", "NVIDIA/DXCache"),
+    ("LOCALAPPDATA", "D3DSCache"),
+    ("LOCALAPPDATA", "AMD/DxCache"),
+    ("LOCALAPPDATA", "AMD/DxcCache"),
+    ("LOCALAPPDATA", "Intel/ShaderCache"),
+];
+
+/// The card drivers' shader caches of this user: megabytes and files.
+/// A cache of tens of gigabytes makes the host device slow to create and
+/// a run's numbers unlike the next one's. `None` where there is none.
+pub fn driver_cache() -> Option<(u64, u64)> {
+    let (mut bytes, mut files) = (0u64, 0u64);
+    for (var, below) in DRIVER_CACHES {
+        let Some(base) = std::env::var_os(var) else {
+            continue;
+        };
+        let (b, f) = folder_size(&std::path::Path::new(&base).join(below), 3);
+        bytes += b;
+        files += f;
+    }
+    (files > 0).then_some((bytes >> 20, files))
+}
+
+/// Bytes and files under `dir`, `depth` folders deep at most; what cannot
+/// be read counts as nothing.
+fn folder_size(dir: &std::path::Path, depth: u32) -> (u64, u64) {
+    let (mut bytes, mut files) = (0u64, 0u64);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_file() {
+            bytes += meta.len();
+            files += 1;
+        } else if meta.is_dir() && depth > 0 {
+            let (b, f) = folder_size(&entry.path(), depth - 1);
+            bytes += b;
+            files += f;
+        }
+    }
+    (bytes, files)
+}
+
 /// This process's page faults so far.
 pub fn page_faults() -> Option<u64> {
     #[cfg(windows)]
