@@ -31,8 +31,10 @@ segue sob a GPL-3.0. Pessoas que escreveram código incluído neste repositório
 - EatCodeSleep2
 - Enzo Souza Duarte
 - Exorion
+- Filip722
 - FIocker
 - flxppr
+- FredDietrich
 - fuzeofficial
 - fxceless
 - Garu667

@@ -566,7 +566,7 @@ fn open(device: &ID3D12Device1, blob: Blob) -> Option<Library> {
     }
     // An empty library is asked for with no blob at all, which `make` cannot
     // say: an empty slice still has an address, and vkd3d-proton refuses an
-    // address with no bytes behind it (fork PR #885).
+    // address with no bytes behind it.
     let mut raw = std::ptr::null_mut();
     // SAFETY: no blob is read; a success that wrote a pointer wrote an owned
     // ID3D12PipelineLibrary.
@@ -682,7 +682,7 @@ pub(crate) fn save(now: bool) {
     static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
     const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
     // Without a library (vkd3d-proton refuses the empty blob) the early list
-    // is still written (fork PR #259).
+    // is still written.
     let Some(dir) = DIR.get() else { return };
     let library = library();
     {
