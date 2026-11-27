@@ -7,6 +7,10 @@ status há mais de `VALIDADE_H` horas fica livre para quem quiser retomá-lo, co
 
 O alvo é o `id` de um problema do diagnóstico (`fase:copy_back`, `pipelines_recusadas`...) ou um mais fino
 (`pipeline:02384a60fda6f2d0`). Só números agregados vão para as issues (docs/asset-policy.md).
+
+O título diz tudo sem abrir a issue: `[etapa] alvo: o problema com o número que pesa`, por exemplo
+`[em andamento] fase:copy_back: cópia de volta 70 ms/quadro (29 %)`. A etapa muda com o trabalho
+(`em andamento`, `A/B`, `PR aberto`, `livre`), então `gh issue list` já mostra quem faz o quê e onde está.
 """
 
 import json
@@ -18,8 +22,41 @@ import time
 from datetime import datetime, timezone
 
 ROTULO = "em-andamento"
+TITULO_MAX = 100
+RESUMO_MAX = 70
+ETAPA = re.compile(r"^\[[^\]]*\]\s*")
 VALIDADE_H = 24.0
 MARCA = re.compile(r"<!--\s*spark-alvo:\s*(?P<alvo>[^|>]+?)\s*\|\s*sessao:\s*(?P<sessao>[^>]+?)\s*-->")
+
+
+def titulo(etapa: str, alvo: str, resumo: str) -> str:
+    """`[etapa] alvo: resumo`, cortado no limite de um título que se lê inteiro numa lista."""
+    resumo = " ".join(resumo.split())
+    t = f"[{etapa}] {alvo}: {resumo}"
+    return t if len(t) <= TITULO_MAX else t[:TITULO_MAX - 1].rstrip() + "…"
+
+
+def trocar_etapa(atual: str, etapa: str) -> str:
+    return f"[{etapa}] {ETAPA.sub('', atual, count=1)}"
+
+
+def resumo_do_problema(p: dict) -> str:
+    """O problema do diagnóstico em poucas palavras, com o número que o põe na lista."""
+    if p.get("custo_ms") is not None and p.get("parte_pct") is not None:
+        return f"{p['titulo']} {p['custo_ms']:.0f} ms/quadro ({p['parte_pct']:.0f} %)"
+    primeira = (p.get("evidencia") or [""])[0]
+    return f"{p['titulo']}: {primeira}" if primeira else p["titulo"]
+
+
+def validar_resumo(resumo: str) -> str | None:
+    """Um motivo para recusar o resumo, ou None. Pontual: curto, sem caminho nem texto de log."""
+    if not resumo.strip():
+        return "o resumo do título está vazio"
+    if len(resumo) > RESUMO_MAX:
+        return f"o resumo tem {len(resumo)} caracteres; no máximo {RESUMO_MAX}, direto ao ponto"
+    if re.search(r"[A-Za-z]:\\|/home/|/Users/|\\Users\\", resumo):
+        return "o resumo tem um caminho de arquivo (docs/asset-policy.md)"
+    return None
 
 
 def marca(alvo: str, sessao: str) -> str:
@@ -108,7 +145,9 @@ def _carimbo() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def assumir(alvo: str, titulo: str, sessao: str, rotulos: list[str]) -> int:
+def assumir(alvo: str, resumo: str, sessao: str, rotulos: list[str]) -> int:
+    if motivo := validar_resumo(resumo):
+        sys.exit(f"coordenar assumir: {motivo}")
     reivs = reivindicacoes(ler_issues())
     d = decidir(alvo, sessao, reivs)
     if d["acao"] == "ocupado":
@@ -121,15 +160,15 @@ def assumir(alvo: str, titulo: str, sessao: str, rotulos: list[str]) -> int:
     if d["acao"] == "retomar":
         n = d["issue"]
         corpo = _gh("issue", "view", str(n), "--json", "body", "-q", ".body")
-        _gh("issue", "edit", str(n), "--body-file", "-", "--add-label", ROTULO, entrada=MARCA.sub(marca(alvo, sessao),
-                                                                                                corpo))
+        _gh("issue", "edit", str(n), "--body-file", "-", "--add-label", ROTULO,
+            "--title", titulo("em andamento", alvo, resumo), entrada=MARCA.sub(marca(alvo, sessao), corpo))
         _comentar(n, f"**Status AutoPilot** ({_carimbo()}): retomado por outra sessão; o último status tinha mais de "
                      f"{VALIDADE_H:.0f} h.")
         print(f"retomado: #{n}")
         return 0
     corpo = (f"{marca(alvo, sessao)}\n**Alvo:** `{alvo}`\n\nEm andamento por uma sessão de AutoPilot. O andamento fica "
              f"nos comentários de status; sem status por {VALIDADE_H:.0f} h, o alvo fica livre para outra sessão.\n")
-    url = _gh("issue", "create", "--title", titulo, "--body-file", "-", "--label",
+    url = _gh("issue", "create", "--title", titulo("em andamento", alvo, resumo), "--body-file", "-", "--label",
               ",".join(["autopilot", ROTULO, *rotulos]), entrada=corpo).strip()
     n = int(url.rstrip("/").rsplit("/", 1)[-1])
     # Duas sessões podem abrir ao mesmo tempo: vale a issue mais antiga, e a outra se fecha como duplicada.
@@ -143,14 +182,24 @@ def assumir(alvo: str, titulo: str, sessao: str, rotulos: list[str]) -> int:
     return 0
 
 
-def status(numero: int, texto: str) -> int:
+def _etapa(numero: int, etapa: str) -> None:
+    atual = _gh("issue", "view", str(numero), "--json", "title", "-q", ".title").strip()
+    novo = trocar_etapa(atual, etapa)
+    if novo != atual:
+        _gh("issue", "edit", str(numero), "--title", novo)
+
+
+def status(numero: int, texto: str, etapa: str | None = None) -> int:
     _comentar(numero, f"**Status AutoPilot** ({_carimbo()}): {texto}")
+    if etapa:
+        _etapa(numero, etapa)
     return 0
 
 
 def liberar(numero: int, motivo: str) -> int:
     _comentar(numero, f"**Status AutoPilot** ({_carimbo()}): liberado. {motivo}".strip())
     _gh("issue", "edit", str(numero), "--remove-label", ROTULO)
+    _etapa(numero, "livre")
     return 0
 
 
@@ -163,15 +212,18 @@ def listar(como_json: bool) -> int:
         print("nenhum alvo em andamento")
     for r in reivs:
         estado = "em andamento" if r["ativa"] else "parado (livre para retomar)"
-        print(f"#{r['numero']} `{r['alvo']}`: {estado}, último status há {r['horas_sem_status']} h, "
-              f"sessão {r['sessao']}")
+        print(f"#{r['numero']} {r['titulo']}  ({estado}, último status há {r['horas_sem_status']} h, "
+              f"sessão {r['sessao']})")
     return 0
 
 
 USO = """Uso:
   python scripts/motor.py coordenar listar [--json]
-  python scripts/motor.py coordenar assumir <alvo> --titulo "<título>" [--rotulo nvidia ...]
-  python scripts/motor.py coordenar status <issue> "<o que foi feito e o próximo passo>"
+  python scripts/motor.py coordenar assumir <alvo> (--de <sessão> | --resumo "<problema + número, até 70 letras>")
+                                                    [--rotulo nvidia ...]
+      Título: `[em andamento] <alvo>: <resumo>`; com `--de`, o resumo sai do diagnóstico da execução.
+  python scripts/motor.py coordenar status <issue> "<o que foi feito e o próximo passo>" [--etapa "A/B"]
+      `--etapa` troca o começo do título (`A/B`, `PR aberto`...).
   python scripts/motor.py coordenar liberar <issue> ["<motivo>"]
 A sessão é `SPARK_SESSAO` (defina uma por agente) ou máquina e processo."""
 
@@ -182,13 +234,27 @@ def comando(args: list[str]) -> int:
     sub, resto = args[0], args[1:]
     if sub == "listar":
         return listar("--json" in resto)
-    if sub == "assumir" and resto and "--titulo" in resto:
-        i = resto.index("--titulo")
-        titulo = resto[i + 1]
+    if sub == "assumir" and resto and ("--resumo" in resto or "--de" in resto):
+        alvo = resto[0]
         rotulos = [resto[j + 1] for j, a in enumerate(resto) if a == "--rotulo" and j + 1 < len(resto)]
-        return assumir(resto[0], titulo, sessao_atual(), rotulos)
+        if "--resumo" in resto:
+            resumo = resto[resto.index("--resumo") + 1]
+        else:
+            from . import problemas
+            from .sessao import Sessao
+            d = problemas.diagnosticar(Sessao(resto[resto.index("--de") + 1]))
+            p = next((p for p in d["problemas"] if p["id"] == alvo.split("|")[0]), None)
+            if not p:
+                sys.exit(f"coordenar assumir: o diagnóstico não tem o problema `{alvo}`; use --resumo")
+            resumo = resumo_do_problema(p)
+        return assumir(alvo, resumo, sessao_atual(), rotulos)
     if sub == "status" and len(resto) >= 2:
-        return status(int(resto[0].lstrip("#")), " ".join(resto[1:]))
+        etapa = None
+        if "--etapa" in resto:
+            i = resto.index("--etapa")
+            etapa = resto[i + 1]
+            del resto[i:i + 2]
+        return status(int(resto[0].lstrip("#")), " ".join(resto[1:]), etapa)
     if sub == "liberar" and resto:
         return liberar(int(resto[0].lstrip("#")), " ".join(resto[1:]))
     sys.exit(USO)

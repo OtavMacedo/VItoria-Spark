@@ -74,9 +74,10 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
 - Antes de abrir uma issue ou um PR, procure duplicatas (`gh issue list --label autopilot`, `gh pr list`). No máximo
   3 issues e 3 PRs por sessão. Use os modelos em `.github/`.
 - Coordene pelas issues ([docs/autopilot.md](docs/autopilot.md)): `motor.py diagnosticar <pasta> --coordenar` e
-  `motor.py coordenar listar` antes de escolher; pule alvos `em-andamento` de outra sessão. `coordenar assumir`
-  antes de começar, `coordenar status` a cada passo (sem status por 24 h o alvo fica livre), PR com `Fecha #N`, ou
-  `coordenar liberar` ao desistir. Um `SPARK_SESSAO` próprio por agente.
+  `motor.py coordenar listar` antes de escolher; pule alvos `em-andamento` de outra sessão. Antes de começar,
+  `coordenar assumir <alvo> --de <pasta>`: o título sai pontual, `[etapa] alvo: problema + número`, e ninguém precisa
+  abrir a issue para saber o que se faz. `coordenar status` a cada passo (`--etapa` acompanha no título; sem status
+  por 24 h o alvo fica livre), PR com `Fecha #N`, ou `coordenar liberar` ao desistir. Um `SPARK_SESSAO` por agente.
 - Nunca baixe, procure ou indique arquivos de jogo, chaves, firmware ou SDKs. Nunca escreva código que quebre
   criptografia ou proteção de cópia. Se encontrar algo assim no caminho, pare e avise a pessoa.
 - Sem ganho medido, não há PR: registre o resultado na issue e escolha outro alvo.

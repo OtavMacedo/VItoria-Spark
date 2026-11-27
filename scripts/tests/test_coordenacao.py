@@ -54,6 +54,33 @@ class Coordenacao(unittest.TestCase):
         ps = c.anotar([{"id": "fase:gpu"}, {"id": "memoria"}, {"id": "descartes"}], r, "b")
         self.assertEqual([p.get("em_andamento") for p in ps], [5, None, None])
 
+    def test_o_titulo_diz_etapa_alvo_e_problema(self):
+        self.assertEqual(c.titulo("em andamento", "fase:copy_back", "cópia de volta 70 ms/quadro (29 %)"),
+                         "[em andamento] fase:copy_back: cópia de volta 70 ms/quadro (29 %)")
+
+    def test_titulo_longo_e_cortado(self):
+        t = c.titulo("em andamento", "pipeline:02384a60fda6f2d0", "x" * 200)
+        self.assertEqual(len(t), c.TITULO_MAX)
+        self.assertTrue(t.endswith("…"))
+
+    def test_trocar_a_etapa_mantem_o_resto(self):
+        self.assertEqual(c.trocar_etapa("[em andamento] fase:gpu: GPU 125 ms/quadro (52 %)", "A/B"),
+                         "[A/B] fase:gpu: GPU 125 ms/quadro (52 %)")
+
+    def test_resumo_de_uma_fase_traz_o_custo(self):
+        p = {"titulo": "cópia de volta", "custo_ms": 70.4, "parte_pct": 29.3, "evidencia": ["x"]}
+        self.assertEqual(c.resumo_do_problema(p), "cópia de volta 70 ms/quadro (29 %)")
+
+    def test_resumo_sem_custo_usa_a_primeira_evidencia(self):
+        p = {"titulo": "pipelines recusadas", "evidencia": ["2 de computação"]}
+        self.assertEqual(c.resumo_do_problema(p), "pipelines recusadas: 2 de computação")
+
+    def test_resumo_vago_longo_ou_com_caminho_e_recusado(self):
+        self.assertIsNotNone(c.validar_resumo(""))
+        self.assertIsNotNone(c.validar_resumo("y" * (c.RESUMO_MAX + 1)))
+        self.assertIsNotNone(c.validar_resumo(r"falha em C:\pasta\arquivo"))
+        self.assertIsNone(c.validar_resumo("GPU 125 ms/quadro (52 %)"))
+
     def test_a_marca_se_le_de_volta(self):
         m = c.MARCA.search("texto\n" + c.marca("pipeline:02384a60fda6f2d0", "pc-12") + "\nmais")
         self.assertEqual((m["alvo"], m["sessao"]), ("pipeline:02384a60fda6f2d0", "pc-12"))
