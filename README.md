@@ -104,17 +104,18 @@ Cada fabricante tem o seu perfil de ajustes em [`perfis/`](perfis), aplicado aut
 ### Evidência para o PortWatch
 
 Evidência pública para o [PortWatch VI](https://portwatch-vi.xyz/). São dados do próprio projeto, medidos em
-2026-11-26.
+2026-11-27 com a `main` atual.
 
 | Campo | Evidência |
 |---|---|
-| Desempenho | **3,2–3,6 fps de mediana, com picos de até 6,4 fps**, numa cena pesada (~4.750 desenhos por quadro); 30 fps nos menus |
-| Estabilidade | 4 sessões de 9 min sem crash e sem perda de dispositivo; com `VICTORY_NO_WATCHDOG=1`, o encerramento na inicialização não volta; 12–14 quadros de mais de 1 s por sessão com o orçamento automático de VRAM |
+| Desempenho | **4,1–4,4 fps de mediana** na cena estável (antes 3,2–3,6), janelas de 5 s chegando a 4,8 fps, numa cena pesada (~4.900 desenhos por quadro); 30 fps nos menus |
+| Estabilidade | 3 sessões de 9–12 min sem crash e sem perda de dispositivo; ~11 quadros de mais de 1 s por sessão no mundo |
 | Hardware | Windows 11 Pro · Ryzen 5 5600GT · 32 GB de RAM · NVIDIA RTX 3060 12 GB · 1080p |
-| Gargalo atual | a placa (~145–160 ms por quadro) e o preparo das cópias (~115–125 ms); a RAM chega ao limite e causa quadros longos |
-| Código | público, GPL-3.0, com 259 testes do tradutor e 234 da GPU passando |
+| Gargalo atual | a placa (~110–135 ms por quadro), o preparo das cópias (~85–105 ms) e a cópia de volta (~65–78 ms) |
+| Compatibilidade | Windows e Linux (Wine/Proton + vkd3d-proton); uma das duas pipelines de computação antes recusadas agora é criada |
+| Código | público, GPL-3.0, com 278 testes do tradutor e 241 da GPU passando |
 
-Mediana das amostras de quadro no mundo, duas execuções de 9 minutos com caches aquecidos.
+Mediana das amostras de quadro da cena estável, três execuções escondidas com caches aquecidos.
 
 ## Requisitos
 
