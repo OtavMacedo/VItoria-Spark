@@ -76,8 +76,14 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    `python scripts/motor.py ruido <pasta> --gravar <SPARK_LOG_DIR>/ruido.json`; o veredito usa esse arquivo
    (`--ruido`) para marcar execuções ruidosas demais. (`scripts/veredito.py` e `scripts/ab_estat.py` continuam
    aceitando os mesmos argumentos de antes: chamam o motor.)
-6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados.
-   Se o avanço for muito relevante (critérios abaixo), o mesmo PR atualiza o README. Se
+6. **Entregar:** se houve ganho real ou a correção funciona, `python scripts/motor.py coordenar entregar <issue>`.
+   O jeito depende de quem roda:
+   - **Quem pode escrever no repositório** (dono, mantenedores): entrega direta. Rebase na principal, as regras do
+     projeto (`verificar.py`), commit e push direto, sem PR e sem esperar outra rodada de testes: o veredito do motor
+     e as checagens locais (passo 5) já são a prova. A issue fecha com o commit.
+   - **Quem não pode escrever** (a maioria): abre um PR do branch atual com `Fecha #<issue>` e os números
+     agregados; quem mantém o projeto revisa. `--pr` força o PR mesmo com permissão, quando você quer revisão.
+   Se o avanço for muito relevante (critérios abaixo), o mesmo commit ou PR atualiza o README. Se
    não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.
 
    **Entregas pequenas valem.** Um PR pequeno com um ganho medido (mesmo que modesto, desde que acima do ruído) ou

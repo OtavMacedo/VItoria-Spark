@@ -203,6 +203,60 @@ def liberar(numero: int, motivo: str) -> int:
     return 0
 
 
+ESCRITA = {"ADMIN", "MAINTAIN", "WRITE"}
+
+
+def modo_de_entrega(permissao: str) -> str:
+    """`direta` para quem pode escrever no repositório (commit e push na main: o A/B do motor e as checagens locais
+    já provaram a mudança); `pr` para os demais (a revisão de quem mantém o projeto é a prova que falta)."""
+    return "direta" if permissao.upper() in ESCRITA else "pr"
+
+
+def _git(*args: str) -> str:
+    r = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        sys.exit(f"git {' '.join(args[:2])}: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+def _remoto(repo: str) -> str:
+    """O remote do git que aponta para `repo` (`dono/nome`), qualquer que seja o nome dele."""
+    for linha in _git("remote", "-v").splitlines():
+        nome, url = linha.split()[:2]
+        if repo.lower() in url.lower().removesuffix(".git"):
+            return nome
+    sys.exit(f"nenhum remote aponta para {repo}")
+
+
+def entregar(numero: int, como_pr: bool) -> int:
+    """Leva o commit atual (a mudança provada) para o projeto e fecha o ciclo da issue `numero`."""
+    info = json.loads(_gh("repo", "view", "--json", "nameWithOwner,viewerPermission,defaultBranchRef"))
+    modo = "pr" if como_pr else modo_de_entrega(info.get("viewerPermission") or "")
+    principal = (info.get("defaultBranchRef") or {}).get("name") or "main"
+    remoto = _remoto(info["nameWithOwner"])
+    if modo == "direta":
+        _git("fetch", remoto, principal)
+        _git("rebase", f"{remoto}/{principal}")
+        regras = subprocess.run([sys.executable, "scripts/verificar.py", "--base", f"{remoto}/{principal}"])
+        if regras.returncode != 0:
+            sys.exit("as regras do projeto recusaram os commits; nada foi enviado")
+        _git("push", remoto, f"HEAD:{principal}")
+        sha = _git("rev-parse", "--short", "HEAD")
+        status(numero, f"entregue direto na `{principal}` em {sha}.", "resolvido")
+        _gh("issue", "edit", str(numero), "--remove-label", ROTULO)
+        _gh("issue", "close", str(numero), "--reason", "completed")
+        print(f"entregue: {sha} na {principal}; #{numero} fechada")
+        return 0
+    ramo = _git("branch", "--show-current")
+    if ramo in ("", principal):
+        sys.exit("para um PR, a mudança precisa estar num branch próprio (não na principal)")
+    _git("push", "-u", remoto, ramo)
+    url = _gh("pr", "create", "--fill", "--body", f"Fecha #{numero}", "--head", ramo).strip()
+    status(numero, f"PR aberto: {url}", "PR aberto")
+    print(f"PR aberto: {url}")
+    return 0
+
+
 def listar(como_json: bool) -> int:
     reivs = reivindicacoes(ler_issues())
     if como_json:
@@ -225,6 +279,9 @@ USO = """Uso:
   python scripts/motor.py coordenar status <issue> "<o que foi feito e o próximo passo>" [--etapa "A/B"]
       `--etapa` troca o começo do título (`A/B`, `PR aberto`...).
   python scripts/motor.py coordenar liberar <issue> ["<motivo>"]
+  python scripts/motor.py coordenar entregar <issue> [--pr]
+      Quem pode escrever no repositório entrega direto: rebase, regras do projeto, push na principal, issue fechada.
+      Quem não pode (ou passa `--pr`) abre um PR do branch atual com `Fecha #<issue>`.
 A sessão é `SPARK_SESSAO` (defina uma por agente) ou máquina e processo."""
 
 
@@ -255,6 +312,8 @@ def comando(args: list[str]) -> int:
             etapa = resto[i + 1]
             del resto[i:i + 2]
         return status(int(resto[0].lstrip("#")), " ".join(resto[1:]), etapa)
+    if sub == "entregar" and resto:
+        return entregar(int(resto[0].lstrip("#")), "--pr" in resto)
     if sub == "liberar" and resto:
         return liberar(int(resto[0].lstrip("#")), " ".join(resto[1:]))
     sys.exit(USO)

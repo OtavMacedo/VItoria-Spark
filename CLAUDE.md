@@ -77,7 +77,10 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
   `motor.py coordenar listar` antes de escolher; pule alvos `em-andamento` de outra sessão. Antes de começar,
   `coordenar assumir <alvo> --de <pasta>`: o título sai pontual, `[etapa] alvo: problema + número`, e ninguém precisa
   abrir a issue para saber o que se faz. `coordenar status` a cada passo (`--etapa` acompanha no título; sem status
-  por 24 h o alvo fica livre), PR com `Fecha #N`, ou `coordenar liberar` ao desistir. Um `SPARK_SESSAO` por agente.
+  por 24 h o alvo fica livre), `coordenar entregar <issue>` ao terminar, ou `coordenar liberar` ao desistir. Um
+  `SPARK_SESSAO` por agente.
+- Entrega: `coordenar entregar` vê a permissão. Com escrita no repositório, vai direto (rebase, regras, push na
+  principal, issue fechada), sem PR e sem nova rodada: o veredito do motor já provou. Sem escrita, abre o PR.
 - Nunca baixe, procure ou indique arquivos de jogo, chaves, firmware ou SDKs. Nunca escreva código que quebre
   criptografia ou proteção de cópia. Se encontrar algo assim no caminho, pare e avise a pessoa.
 - Sem ganho medido, não há PR: registre o resultado na issue e escolha outro alvo.

@@ -81,6 +81,12 @@ class Coordenacao(unittest.TestCase):
         self.assertIsNotNone(c.validar_resumo(r"falha em C:\pasta\arquivo"))
         self.assertIsNone(c.validar_resumo("GPU 125 ms/quadro (52 %)"))
 
+    def test_quem_escreve_entrega_direto_e_os_demais_por_pr(self):
+        for permissao in ("ADMIN", "MAINTAIN", "WRITE", "write"):
+            self.assertEqual(c.modo_de_entrega(permissao), "direta")
+        for permissao in ("TRIAGE", "READ", "NONE", ""):
+            self.assertEqual(c.modo_de_entrega(permissao), "pr")
+
     def test_a_marca_se_le_de_volta(self):
         m = c.MARCA.search("texto\n" + c.marca("pipeline:02384a60fda6f2d0", "pc-12") + "\nmais")
         self.assertEqual((m["alvo"], m["sessao"]), ("pipeline:02384a60fda6f2d0", "pc-12"))
