@@ -251,31 +251,38 @@ fn operands(inst: &Instruction, name: &str, fields: &Fields) -> String {
                     .into_iter()
                     .chain(sampler.map(|s| s.to_string())),
             );
-            if *dmask != 1 {
-                let _ = write!(out, " dmask:0x{dmask:x}");
-            }
-            let dims = [
-                "1D",
-                "2D",
-                "3D",
-                "CUBE",
-                "1D_ARRAY",
-                "2D_ARRAY",
-                "2D_MSAA",
-                "2D_MSAA_ARRAY",
-            ];
-            let _ = write!(out, " dim:SQ_RSRC_IMG_{}", dims[usize::from(*dim & 7)]);
-            for (on, text) in [(*r128, "r128"), (*unorm, "unorm")] {
-                if on {
-                    out.push(' ');
-                    out.push_str(text);
+            if name.starts_with("image_bvh") {
+                flags(&mut out, cache, true);
+                if *a16 {
+                    out.push_str(" a16");
                 }
-            }
-            flags(&mut out, cache, true);
-            for (on, text) in [(*a16, "a16"), (*d16, "d16"), (*tfe, "tfe"), (*lwe, "lwe")] {
-                if on {
-                    out.push(' ');
-                    out.push_str(text);
+            } else {
+                if *dmask != 1 {
+                    let _ = write!(out, " dmask:0x{dmask:x}");
+                }
+                let dims = [
+                    "1D",
+                    "2D",
+                    "3D",
+                    "CUBE",
+                    "1D_ARRAY",
+                    "2D_ARRAY",
+                    "2D_MSAA",
+                    "2D_MSAA_ARRAY",
+                ];
+                let _ = write!(out, " dim:SQ_RSRC_IMG_{}", dims[usize::from(*dim & 7)]);
+                for (on, text) in [(*r128, "r128"), (*unorm, "unorm")] {
+                    if on {
+                        out.push(' ');
+                        out.push_str(text);
+                    }
+                }
+                flags(&mut out, cache, true);
+                for (on, text) in [(*a16, "a16"), (*d16, "d16"), (*tfe, "tfe"), (*lwe, "lwe")] {
+                    if on {
+                        out.push(' ');
+                        out.push_str(text);
+                    }
                 }
             }
         }
@@ -780,5 +787,55 @@ mod tests {
         };
         assert_eq!(data, Operand::Vector { reg: 8, dwords: 2 });
         assert_eq!(addr.len(), 2);
+    }
+
+    #[test]
+    fn bvh_intersect_ray_uses_fixed_operands_and_omits_image_modifiers() {
+        // RDNA2 MIMG_IntersectRay always writes 4 VGPRs and reads a 4-SGPR
+        // (128-bit) BVH descriptor, and SP3 omits dmask/dim/r128/unorm/d16/tfe/lwe.
+        assert_eq!(
+            one(&[0xF198_9F01, 0x0003_1402], true),
+            "image_bvh_intersect_ray v[20:23], v[2:12], s[12:15]"
+        );
+        assert_eq!(
+            one(&[0xF198_2081, 0xC003_1402], true),
+            "image_bvh_intersect_ray v[20:23], v[2:9], s[12:15] dlc glc a16"
+        );
+        assert_eq!(
+            one(
+                &[
+                    0xF19C_9F07,
+                    0x0003_1402,
+                    0x0504_030D,
+                    0x0908_0706,
+                    0x000C_0B0A,
+                ],
+                true
+            ),
+            "image_bvh64_intersect_ray v[20:23], [v2,v13,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12], s[12:15]"
+        );
+
+        // Even with dmask=0, r128=0, tfe=1, lwe=1, and d16=1 in raw encoding bits,
+        // `Fields::Image` keeps 4-VGPR `data` and 4-SGPR `rsrc`.
+        let raw: [u32; 3] = [0xF198_0001 | (3 << 16), 0x8003_1402, 0xBF81_0000];
+        let code: Vec<u8> = raw.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let Fields::Image {
+            data,
+            rsrc,
+            sampler,
+            ..
+        } = decode(&code).unwrap()[0].fields(true)
+        else {
+            panic!("not an image instruction");
+        };
+        assert_eq!(data, Operand::Vector { reg: 20, dwords: 4 });
+        assert_eq!(
+            rsrc,
+            Operand::Scalar {
+                code: 12,
+                dwords: 4
+            }
+        );
+        assert_eq!(sampler, None);
     }
 }
