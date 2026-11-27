@@ -54,7 +54,8 @@ sugerida, chaves a testar, arquivos do código e quantos itens dá para verifica
 As fases se sobrepõem (cópias, write watch e texturas estão dentro do preparo; threads diferentes correm ao mesmo
 tempo), então as partes não somam 100 %: cada uma é lida contra o quadro.
 
-Execuções anteriores às fases por quadro também são diagnosticadas: as fases vêm das medianas das janelas de 1 s e,
+As fases por quadro pedem `SPARK_PHASES=1` (desligado por padrão; `autopilot.py rodar` liga). Execuções sem elas
+e as anteriores a elas também são diagnosticadas: as fases vêm das medianas das janelas de 1 s e,
 num build de diagnóstico, das mensagens do log de quadros; o relatório diz isso e não mostra percentis.
 
 ### Problemas de medição

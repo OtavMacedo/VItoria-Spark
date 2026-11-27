@@ -16,7 +16,8 @@ Uso:
 
 - No fim, `rodar` chama o motor (`scripts/motor.py diagnosticar`): todos os problemas da execução em ordem, o
   plano da próxima (`plano.toml`) e, com A/B, o veredito. `SPARK_OFFLINE=1` vai ligado (os shaders com falha ficam
-  na pasta da sessão para `motor.py reproduzir`; `SPARK_OFFLINE=0` desliga).
+  na pasta da sessão para `motor.py reproduzir`; `SPARK_OFFLINE=0` desliga), e `SPARK_PHASES=1` também (as fases
+  de cada quadro, para o diagnóstico; `SPARK_PHASES=0` desliga).
 
 - `confirmar` registra, fora do repositório, que a pessoa declarou usar a própria cópia, obtida legalmente. O
   AutoPilot não roda sem isso (docs/autopilot.md).
@@ -205,6 +206,7 @@ def rodar(args: list[str]) -> int:
         VICTORY_KEYS=",".join(f"{t}:Enter" for t in range(20, 250, 10)),
         SPARK_LOG_DIR=str(pasta),
         SPARK_OFFLINE="1",
+        SPARK_PHASES="1",
     )
     env.update(extra)
     trava = BASE / ".autopilot.lock"

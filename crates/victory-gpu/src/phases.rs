@@ -4,8 +4,9 @@
 //! The frame log's totals run from the start in every build; at each
 //! present their differences since the present before are that frame's
 //! parts. Sixteen atomic loads a frame, on the thread that presents:
-//! nothing is locked and nothing is written here. `SPARK_PHASES=0` leaves
-//! the frames without parts and the write watch untimed (`crate::watch`).
+//! nothing is locked and nothing is written here. Off unless
+//! `SPARK_PHASES=1`: frames then have no parts and the write watch is not
+//! timed (`crate::watch`).
 //!
 //! Work of the next frame is already under way on other threads when a
 //! frame is presented, so a part's time lands in the frame it ended in;
@@ -55,7 +56,7 @@ fn since(now: &FrameParts, then: &FrameParts) -> FrameParts {
     }
 }
 
-/// Whether frames are read part by part (`SPARK_PHASES=0`: no). A switch
+/// Whether frames are read part by part (`SPARK_PHASES=1`). A switch
 /// of the table (`crate::switches`): it may alternate inside a run.
 pub(crate) fn on() -> bool {
     crate::switches::PHASES.on()
@@ -95,7 +96,12 @@ impl Reader {
     /// The parts of the frame that ends now; `None` with the phases off
     /// and for the first frame after they come on.
     pub(crate) fn frame(&mut self) -> Option<FrameParts> {
-        if !on() {
+        self.frame_if(on())
+    }
+
+    /// [`Reader::frame`] with the switch's value given.
+    fn frame_if(&mut self, on: bool) -> Option<FrameParts> {
+        if !on {
             self.last = None;
             return None;
         }
@@ -155,13 +161,12 @@ mod tests {
     #[test]
     fn a_frame_is_the_difference_of_the_totals() {
         let mut reader = Reader::new();
-        if !on() {
-            assert!(reader.frame().is_none());
-            return;
-        }
+        // Off, then on: the first frame after has no totals before it.
+        assert!(reader.frame_if(false).is_none());
+        assert!(reader.frame_if(true).is_none());
         crate::framelog::add(T::RemapUs, 1500);
         crate::framelog::add(T::CopyBytes, 4096);
-        let Some(parts) = reader.frame() else {
+        let Some(parts) = reader.frame_if(true) else {
             panic!("a frame read with the phases on has parts");
         };
         // Other tests add to the same totals: at least what was added here.

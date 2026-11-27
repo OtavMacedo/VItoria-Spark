@@ -65,10 +65,11 @@ thread própria (`spark-log`) através de uma fila limitada; com a fila cheia o
 evento é descartado e contado (`events_dropped` no resumo), nunca esperado.
 Um mesmo ponto do código que emite mais de 30 eventos em 10 s tem o excesso
 contado e resumido numa linha `repeated events counted instead of written`.
-Não há eventos por draw; por quadro há só somas em memória: o comprimento do quadro e, para as fases, 16 leituras
-de contadores atômicos e uma dúzia de somas sob a mesma trava (menos de 1 µs por quadro no teste
-`a_frame_costs_microseconds`; `SPARK_PHASES=0` desliga). O write watch ganha duas leituras de relógio por consulta
-ao sistema, que custa dezenas de microssegundos.
+Não há eventos por draw; por quadro há só somas em memória: o comprimento do quadro e, com `SPARK_PHASES=1`, 16
+leituras de contadores atômicos e uma dúzia de somas sob a mesma trava (menos de 1 µs por quadro no teste
+`a_frame_costs_microseconds`), mais duas leituras de relógio por consulta ao write watch, que custa dezenas de
+microssegundos. As fases ficam desligadas por padrão enquanto um A/B na execução não mostrar, com folga, que não
+custam nada.
 
 ### Variáveis
 
@@ -81,7 +82,7 @@ ao sistema, que custa dezenas de microssegundos.
 | `SPARK_STABLE_DRAWS=<n>` | desenhos por quadro a partir dos quais a cena é a estável (padrão 4500) |
 | `SPARK_STABLE_AFTER_S=<s>` | segundos depois do 1º quadro do mundo antes da cena estável (padrão 60) |
 | `SPARK_AB=CHAVE[=a/b][+CHAVE2...][*CHAVE3...][:s]` | A/B dentro da execução; `*` separa fatores de um fatorial (ver abaixo) |
-| `SPARK_PHASES=0` | não mede as fases por quadro (padrão: mede) |
+| `SPARK_PHASES=1` | mede as fases de cada quadro (padrão: não mede; `autopilot.py rodar` liga). Pode alternar numa execução: `SPARK_AB=SPARK_PHASES` mede o custo da própria medição |
 | `SPARK_OFFLINE=1` | guarda em `offline/` os contêineres dos shaders que não traduzem e das pipelines recusadas, para `motor.py reproduzir` (padrão: não guarda) |
 | `SPARK_PLAN=<plano.toml>` | vários A/B em sequência na mesma execução (ver abaixo) |
 
