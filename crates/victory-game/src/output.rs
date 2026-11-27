@@ -165,6 +165,18 @@ pub struct TitlePatch {
     pub write: Vec<u8>,
 }
 
+/// The patch that sets the scene's size to `scale` of the output (the
+/// title's temporal pass, and its FidelityFX path's partner scale), from the
+/// stock 2/3.
+pub fn scene_scale_patch(sites: &OutputSites, scale: f32) -> TitlePatch {
+    TitlePatch {
+        name: "output: scene scale",
+        rva: sites.scene_scale,
+        expect: STOCK_SCENE_SCALE.to_le_bytes().to_vec(),
+        write: scale.to_le_bytes().to_vec(),
+    }
+}
+
 /// The patches for an output of `size`, the scene at `scene_scale` of it,
 /// and `scanout_bytes` reserved for the scanout buffers (the caller knows
 /// their tiled layout).
@@ -198,12 +210,7 @@ pub fn output_patches(
             expect: STOCK_SCANOUT_RESERVATION.to_vec(),
             write: reservation.to_vec(),
         },
-        TitlePatch {
-            name: "output: scene scale",
-            rva: sites.scene_scale,
-            expect: STOCK_SCENE_SCALE.to_le_bytes().to_vec(),
-            write: scene_scale.to_le_bytes().to_vec(),
-        },
+        scene_scale_patch(sites, scene_scale),
         TitlePatch {
             name: "output: settings viewport size",
             rva: sites.ui_size_load,
