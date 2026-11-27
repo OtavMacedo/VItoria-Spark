@@ -155,6 +155,29 @@ fn with_state(this: This, f: impl FnOnce(&crate::host::HostList, &mut crate::dra
     crate::profile::seen(crate::profile::Seen::Record);
 }
 
+/// Work of ours at a place in a title list (DLSS in place of the title's
+/// FidelityFX upscaling, `crate::streamline`): it is given the host list
+/// there and says whether it recorded into it; if it did, the title's draw
+/// state is set again before the title's next draw or dispatch.
+#[cfg(windows)]
+pub(crate) type External = Box<dyn FnOnce(&crate::host::HostList) -> bool + Send>;
+
+/// Runs `work` now, at this place of title list `this` (lists record as
+/// their methods are called). False if the list records nowhere (no host
+/// GPU); `work` is then dropped unrun.
+#[cfg(windows)]
+pub(crate) fn external(this: This, work: External) -> bool {
+    if host_list(this).is_none() {
+        return false;
+    }
+    with_state(this, |host, state| {
+        if work(host) {
+            state.replay(host);
+        }
+    });
+    true
+}
+
 /// The submission of `lists` has run: each gives its descriptor tables'
 /// slots back ([`crate::draw::State::tables_done`]). A list cut at waits
 /// keeps them: its state goes with its last part.
