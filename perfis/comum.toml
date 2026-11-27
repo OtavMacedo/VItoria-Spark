@@ -13,3 +13,7 @@ VICTORY_PARALLEL_REFRESH = "1"
 VICTORY_SETTLE_ROOM = "1"
 VICTORY_LOOKUP_CACHE = "1"
 VICTORY_NO_WATCHDOG = "1"
+# Copia memória do título com uma cópia simples no processo (só pede ao kernel quando falta a página): o mesmo
+# resultado byte a byte. RTX 3060 12 GB, driver 616.56, cena pesada de ~4.700 desenhos, A/B na rodada em 2 sessões:
+# quadro -2,5 % (IC 95 % -3,6 a -1,4) e -3,0 % (IC -4,1 a -1,9); cópias do preparo 73 -> 58 ms; imagem igual por braço.
+VICTORY_COPY_PLAIN = "1"
