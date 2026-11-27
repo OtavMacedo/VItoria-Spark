@@ -54,32 +54,60 @@ class Coordenacao(unittest.TestCase):
         ps = c.anotar([{"id": "fase:gpu"}, {"id": "memoria"}, {"id": "descartes"}], r, "b")
         self.assertEqual([p.get("em_andamento") for p in ps], [5, None, None])
 
-    def test_o_titulo_diz_etapa_alvo_e_problema(self):
-        self.assertEqual(c.titulo("em andamento", "fase:copy_back", "cópia de volta 70 ms/quadro (29 %)"),
-                         "[em andamento] fase:copy_back: cópia de volta 70 ms/quadro (29 %)")
+    def test_o_titulo_diz_etapa_e_o_que_se_faz(self):
+        self.assertEqual(c.titulo("em andamento", "Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)"),
+                         "[AutoPilot: em andamento] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)")
+
+    def test_etapa_tecnica_vira_palavra_simples(self):
+        self.assertEqual(c.titulo("A/B", "Reduzir travadas de mais de 1 s"), "[AutoPilot: testando] Reduzir travadas de mais de 1 s")
 
     def test_titulo_longo_e_cortado(self):
-        t = c.titulo("em andamento", "pipeline:02384a60fda6f2d0", "x" * 200)
+        t = c.titulo("em andamento", "x" * 200)
         self.assertEqual(len(t), c.TITULO_MAX)
         self.assertTrue(t.endswith("…"))
 
     def test_trocar_a_etapa_mantem_o_resto(self):
-        self.assertEqual(c.trocar_etapa("[em andamento] fase:gpu: GPU 125 ms/quadro (52 %)", "A/B"),
-                         "[A/B] fase:gpu: GPU 125 ms/quadro (52 %)")
+        self.assertEqual(c.trocar_etapa("[AutoPilot: em andamento] Reduzir a espera pela placa (126 ms por quadro, 50 %)", "PR aberto"),
+                         "[AutoPilot: PR aberto] Reduzir a espera pela placa (126 ms por quadro, 50 %)")
 
-    def test_resumo_de_uma_fase_traz_o_custo(self):
-        p = {"titulo": "cópia de volta", "custo_ms": 70.4, "parte_pct": 29.3, "evidencia": ["x"]}
-        self.assertEqual(c.resumo_do_problema(p), "cópia de volta 70 ms/quadro (29 %)")
+    def test_resumo_de_uma_fase_diz_a_acao_e_o_peso(self):
+        p = {"id": "fase:copy_back", "titulo": "Cópia de volta", "custo_ms": 77.2, "parte_pct": 31.4}
+        self.assertEqual(c.resumo_do_problema(p), "Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)")
 
-    def test_resumo_sem_custo_usa_a_primeira_evidencia(self):
-        p = {"titulo": "pipelines recusadas", "evidencia": ["2 de computação"]}
-        self.assertEqual(c.resumo_do_problema(p), "pipelines recusadas: 2 de computação")
+    def test_resumo_de_shaders_recusados_diz_o_efeito(self):
+        p = {"id": "pipelines_recusadas", "titulo": "Pipelines recusadas pelo host", "itens": [{}, {}]}
+        self.assertEqual(c.resumo_do_problema(p),
+                         "Fazer a placa aceitar shaders recusados (2 recusados: efeito faltando na tela)")
 
-    def test_resumo_vago_longo_ou_com_caminho_e_recusado(self):
+    def test_os_resumos_gerados_passam_na_validacao(self):
+        for p in ({"id": "fase:copy_back", "titulo": "Cópia de volta", "custo_ms": 77.2, "parte_pct": 31.4},
+                  {"id": "pipelines_recusadas", "titulo": "x", "itens": [{}]},
+                  {"id": "memoria", "titulo": "x"}):
+            self.assertIsNone(c.validar_resumo(c.resumo_do_problema(p)), p)
+
+    def test_resumo_vago_longo_com_caminho_ou_nome_interno_e_recusado(self):
         self.assertIsNotNone(c.validar_resumo(""))
         self.assertIsNotNone(c.validar_resumo("y" * (c.RESUMO_MAX + 1)))
         self.assertIsNotNone(c.validar_resumo(r"falha em C:\pasta\arquivo"))
-        self.assertIsNone(c.validar_resumo("GPU 125 ms/quadro (52 %)"))
+        self.assertIsNotNone(c.validar_resumo("pipelines_recusadas: 2 wave64"))
+        self.assertIsNotNone(c.validar_resumo("fase:copy_back 70 ms"))
+        self.assertIsNone(c.validar_resumo("Reduzir a espera pela placa (126 ms por quadro, 50 %)"))
+
+    def test_a_ficha_tecnica_vai_no_corpo_e_volta_na_lista(self):
+        p = {"id": "fase:copy_back", "titulo": "Cópia de volta", "custo_ms": 77.2, "parte_pct": 31.4,
+             "evidencia": ["76 MB por quadro"], "codigo": ["crates/victory-gpu/src/host.rs"],
+             "chaves": [{"nome": "VICTORY_X", "alternavel": True}], "sugestao": "ler só o que mudou"}
+        corpo = c.corpo_da_issue("fase:copy_back", "a", c.ficha("fase:copy_back", p))
+        i = issue(4, "fase:copy_back", "a")
+        i["body"] = corpo
+        f = self.reivs(i)[0]["ficha"]
+        self.assertEqual(f["alvo"], "fase:copy_back")
+        self.assertEqual(f["metrica"]["custo_ms_por_quadro"], 77.2)
+        self.assertEqual(f["chaves"], ["VICTORY_X"])
+        self.assertEqual(f["codigo"], ["crates/victory-gpu/src/host.rs"])
+
+    def test_issue_sem_ficha_ainda_conta(self):
+        self.assertIsNone(self.reivs(issue(4, "memoria"))[0]["ficha"])
 
     def test_quem_escreve_entrega_direto_e_os_demais_por_pr(self):
         for permissao in ("ADMIN", "MAINTAIN", "WRITE", "write"):

@@ -8,9 +8,14 @@ status há mais de `VALIDADE_H` horas fica livre para quem quiser retomá-lo, co
 O alvo é o `id` de um problema do diagnóstico (`fase:copy_back`, `pipelines_recusadas`...) ou um mais fino
 (`pipeline:02384a60fda6f2d0`). Só números agregados vão para as issues (docs/asset-policy.md).
 
-O título diz tudo sem abrir a issue: `[etapa] alvo: o problema com o número que pesa`, por exemplo
-`[em andamento] fase:copy_back: cópia de volta 70 ms/quadro (29 %)`. A etapa muda com o trabalho
-(`em andamento`, `A/B`, `PR aberto`, `livre`), então `gh issue list` já mostra quem faz o quê e onde está.
+O título diz, em português simples, o que está sendo feito e quanto pesa, sem abrir a issue:
+`[AutoPilot: em andamento] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)`. Nada de nome interno (`fase:...`,
+`pipelines_recusadas`): o alvo técnico fica na marca do corpo. A etapa muda com o trabalho (`em andamento`,
+`testando`, `PR aberto`, `resolvido`, `livre`), então `gh issue list` já mostra quem faz o quê e onde está.
+
+Para a IA de outra pessoa, o corpo traz uma ficha técnica em JSON (bloco ```spark-ficha```): alvo, componente,
+métrica, evidência agregada, arquivos de código, chaves a testar, hashes verificáveis sem o título e a sugestão do
+motor. `coordenar listar --json` a devolve junto de cada issue, sem abrir nenhuma.
 """
 
 import json
@@ -23,29 +28,53 @@ from datetime import datetime, timezone
 
 ROTULO = "em-andamento"
 TITULO_MAX = 100
-RESUMO_MAX = 70
+RESUMO_MAX = 85
+ETAPAS = {"a/b": "testando", "ab": "testando", "teste": "testando"}
+# O que se faz em cada tipo de problema do diagnóstico, dito para quem não conhece o código.
+ACOES = {
+    "pipelines_recusadas": "Fazer a placa aceitar shaders recusados",
+    "descartes": "Recuperar desenhos descartados",
+    "memoria": "Evitar estouro da memória da placa",
+    "quadros_longos": "Reduzir travadas de mais de 1 s",
+    "imagem": "Corrigir defeitos de imagem",
+    "falha": "Corrigir um crash",
+    "dispositivo_perdido": "Corrigir a perda da placa (crash)",
+    "sem_mundo": "Fazer o título chegar ao mundo",
+}
+JARGAO = re.compile(r"\b[a-z0-9]+_[a-z0-9_]+\b|\b[a-z]+:[a-z_]+\b")
 ETAPA = re.compile(r"^\[[^\]]*\]\s*")
 VALIDADE_H = 24.0
+FICHA = re.compile(r"```spark-ficha\s*\n(?P<json>.*?)\n```", re.S)
 MARCA = re.compile(r"<!--\s*spark-alvo:\s*(?P<alvo>[^|>]+?)\s*\|\s*sessao:\s*(?P<sessao>[^>]+?)\s*-->")
 
 
-def titulo(etapa: str, alvo: str, resumo: str) -> str:
-    """`[etapa] alvo: resumo`, cortado no limite de um título que se lê inteiro numa lista."""
-    resumo = " ".join(resumo.split())
-    t = f"[{etapa}] {alvo}: {resumo}"
+def etapa_simples(etapa: str) -> str:
+    return ETAPAS.get(etapa.strip().lower(), etapa.strip())
+
+
+def titulo(etapa: str, resumo: str) -> str:
+    """`[AutoPilot: etapa] resumo`, cortado no limite de um título que se lê inteiro numa lista."""
+    t = f"[AutoPilot: {etapa_simples(etapa)}] {' '.join(resumo.split())}"
     return t if len(t) <= TITULO_MAX else t[:TITULO_MAX - 1].rstrip() + "…"
 
 
 def trocar_etapa(atual: str, etapa: str) -> str:
-    return f"[{etapa}] {ETAPA.sub('', atual, count=1)}"
+    return f"[AutoPilot: {etapa_simples(etapa)}] {ETAPA.sub('', atual, count=1)}"
 
 
 def resumo_do_problema(p: dict) -> str:
-    """O problema do diagnóstico em poucas palavras, com o número que o põe na lista."""
-    if p.get("custo_ms") is not None and p.get("parte_pct") is not None:
-        return f"{p['titulo']} {p['custo_ms']:.0f} ms/quadro ({p['parte_pct']:.0f} %)"
-    primeira = (p.get("evidencia") or [""])[0]
-    return f"{p['titulo']}: {primeira}" if primeira else p["titulo"]
+    """O que se faz no problema do diagnóstico e quanto ele pesa, em português simples."""
+    if p["id"].startswith("fase:") and p.get("custo_ms") is not None:
+        acao = f"Reduzir o tempo de {p['titulo'][0].lower()}{p['titulo'][1:]}"
+        peso = f"{p['custo_ms']:.0f} ms por quadro"
+        if p.get("parte_pct") is not None:
+            peso += f", {p['parte_pct']:.0f} %"
+        return f"{acao} ({peso})"
+    acao = ACOES.get(p["id"], p["titulo"])
+    if p["id"] == "pipelines_recusadas" and p.get("itens"):
+        n = len(p["itens"])
+        return f"{acao} ({n} {'recusado' if n == 1 else 'recusados'}: efeito faltando na tela)"
+    return acao
 
 
 def validar_resumo(resumo: str) -> str | None:
@@ -54,9 +83,48 @@ def validar_resumo(resumo: str) -> str | None:
         return "o resumo do título está vazio"
     if len(resumo) > RESUMO_MAX:
         return f"o resumo tem {len(resumo)} caracteres; no máximo {RESUMO_MAX}, direto ao ponto"
+    if JARGAO.search(resumo):
+        return ("o resumo tem um nome interno (como `fase:...` ou `nome_com_traco`); diga em português simples o "
+                "que está sendo feito e quanto pesa")
     if re.search(r"[A-Za-z]:\\|/home/|/Users/|\\Users\\", resumo):
         return "o resumo tem um caminho de arquivo (docs/asset-policy.md)"
     return None
+
+
+def ficha(alvo: str, p: dict | None) -> dict:
+    """A ficha técnica de um alvo, a partir do problema do diagnóstico (`p`) quando houver: só agregados."""
+    f = {"alvo": alvo}
+    if not p:
+        return f
+    f["problema"] = p.get("titulo")
+    if p.get("custo_ms") is not None:
+        f["metrica"] = {"custo_ms_por_quadro": p["custo_ms"], "parte_do_quadro_pct": p.get("parte_pct")}
+    for chave_p, chave_f in (("evidencia", "evidencia"), ("codigo", "codigo"), ("offline", "hashes_sem_o_titulo"),
+                             ("sugestao", "sugestao")):
+        if p.get(chave_p):
+            f[chave_f] = p[chave_p]
+    if p.get("chaves"):
+        f["chaves"] = [c["nome"] if isinstance(c, dict) else c for c in p["chaves"]]
+    return f
+
+
+def corpo_da_issue(alvo: str, sessao: str, f: dict) -> str:
+    import json as _json
+    return (f"{marca(alvo, sessao)}\n**Alvo técnico:** `{alvo}`\n\n"
+            f"Em andamento por uma sessão de AutoPilot. O andamento fica nos comentários de status; sem status por "
+            f"{VALIDADE_H:.0f} h, o alvo fica livre para outra sessão.\n\n"
+            "<details><summary>Ficha técnica (para agentes)</summary>\n\n"
+            f"```spark-ficha\n{_json.dumps(f, ensure_ascii=False, indent=1)}\n```\n</details>\n")
+
+
+def ler_ficha(corpo: str) -> dict | None:
+    m = FICHA.search(corpo or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m["json"])
+    except ValueError:
+        return None
 
 
 def marca(alvo: str, sessao: str) -> str:
@@ -86,7 +154,7 @@ def reivindicacoes(issues: list[dict], agora: float | None = None, validade_h: f
         idade = _horas(i["updatedAt"], agora)
         saida.append({"numero": i["number"], "titulo": i.get("title", ""), "alvo": m["alvo"].strip(),
                       "sessao": m["sessao"].strip(), "horas_sem_status": round(idade, 1),
-                      "ativa": ROTULO in rotulos and idade < validade_h})
+                      "ativa": ROTULO in rotulos and idade < validade_h, "ficha": ler_ficha(i.get("body") or "")})
     return sorted(saida, key=lambda r: r["numero"])
 
 
@@ -145,7 +213,7 @@ def _carimbo() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def assumir(alvo: str, resumo: str, sessao: str, rotulos: list[str]) -> int:
+def assumir(alvo: str, resumo: str, sessao: str, rotulos: list[str], problema: dict | None = None) -> int:
     if motivo := validar_resumo(resumo):
         sys.exit(f"coordenar assumir: {motivo}")
     reivs = reivindicacoes(ler_issues())
@@ -161,14 +229,13 @@ def assumir(alvo: str, resumo: str, sessao: str, rotulos: list[str]) -> int:
         n = d["issue"]
         corpo = _gh("issue", "view", str(n), "--json", "body", "-q", ".body")
         _gh("issue", "edit", str(n), "--body-file", "-", "--add-label", ROTULO,
-            "--title", titulo("em andamento", alvo, resumo), entrada=MARCA.sub(marca(alvo, sessao), corpo))
-        _comentar(n, f"**Status AutoPilot** ({_carimbo()}): retomado por outra sessão; o último status tinha mais de "
+            "--title", titulo("em andamento", resumo), entrada=MARCA.sub(marca(alvo, sessao), corpo))
+        _comentar(n, f"**[AutoPilot Status]** ({_carimbo()}): retomado por outra sessão; o último status tinha mais de "
                      f"{VALIDADE_H:.0f} h.")
         print(f"retomado: #{n}")
         return 0
-    corpo = (f"{marca(alvo, sessao)}\n**Alvo:** `{alvo}`\n\nEm andamento por uma sessão de AutoPilot. O andamento fica "
-             f"nos comentários de status; sem status por {VALIDADE_H:.0f} h, o alvo fica livre para outra sessão.\n")
-    url = _gh("issue", "create", "--title", titulo("em andamento", alvo, resumo), "--body-file", "-", "--label",
+    corpo = corpo_da_issue(alvo, sessao, ficha(alvo, problema))
+    url = _gh("issue", "create", "--title", titulo("em andamento", resumo), "--body-file", "-", "--label",
               ",".join(["autopilot", ROTULO, *rotulos]), entrada=corpo).strip()
     n = int(url.rstrip("/").rsplit("/", 1)[-1])
     # Duas sessões podem abrir ao mesmo tempo: vale a issue mais antiga, e a outra se fecha como duplicada.
@@ -190,14 +257,14 @@ def _etapa(numero: int, etapa: str) -> None:
 
 
 def status(numero: int, texto: str, etapa: str | None = None) -> int:
-    _comentar(numero, f"**Status AutoPilot** ({_carimbo()}): {texto}")
+    _comentar(numero, f"**[AutoPilot Status]** ({_carimbo()}): {texto}")
     if etapa:
         _etapa(numero, etapa)
     return 0
 
 
 def liberar(numero: int, motivo: str) -> int:
-    _comentar(numero, f"**Status AutoPilot** ({_carimbo()}): liberado. {motivo}".strip())
+    _comentar(numero, f"**[AutoPilot Status]** ({_carimbo()}): liberado. {motivo}".strip())
     _gh("issue", "edit", str(numero), "--remove-label", ROTULO)
     _etapa(numero, "livre")
     return 0
@@ -266,18 +333,19 @@ def listar(como_json: bool) -> int:
         print("nenhum alvo em andamento")
     for r in reivs:
         estado = "em andamento" if r["ativa"] else "parado (livre para retomar)"
-        print(f"#{r['numero']} {r['titulo']}  ({estado}, último status há {r['horas_sem_status']} h, "
-              f"sessão {r['sessao']})")
+        print(f"#{r['numero']} {r['titulo']}  [{r['alvo']}] ({estado}, último status há "
+              f"{r['horas_sem_status']} h, sessão {r['sessao']})")
     return 0
 
 
 USO = """Uso:
   python scripts/motor.py coordenar listar [--json]
-  python scripts/motor.py coordenar assumir <alvo> (--de <sessão> | --resumo "<problema + número, até 70 letras>")
+  python scripts/motor.py coordenar assumir <alvo> (--de <sessão> | --resumo "<o que se faz (quanto pesa)>")
                                                     [--rotulo nvidia ...]
-      Título: `[em andamento] <alvo>: <resumo>`; com `--de`, o resumo sai do diagnóstico da execução.
+      Título: `[AutoPilot: em andamento] <resumo>`, em português simples (até 85 letras, sem nomes internos); com `--de`, o
+      resumo sai do diagnóstico da execução. Ex.: "Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)".
   python scripts/motor.py coordenar status <issue> "<o que foi feito e o próximo passo>" [--etapa "A/B"]
-      `--etapa` troca o começo do título (`A/B`, `PR aberto`...).
+      `--etapa` troca o começo do título (`testando`, `PR aberto`, `resolvido`...).
   python scripts/motor.py coordenar liberar <issue> ["<motivo>"]
   python scripts/motor.py coordenar entregar <issue> [--pr]
       Quem pode escrever no repositório entrega direto: rebase, regras do projeto, push na principal, issue fechada.
@@ -294,6 +362,7 @@ def comando(args: list[str]) -> int:
     if sub == "assumir" and resto and ("--resumo" in resto or "--de" in resto):
         alvo = resto[0]
         rotulos = [resto[j + 1] for j, a in enumerate(resto) if a == "--rotulo" and j + 1 < len(resto)]
+        p = None
         if "--resumo" in resto:
             resumo = resto[resto.index("--resumo") + 1]
         else:
@@ -304,7 +373,7 @@ def comando(args: list[str]) -> int:
             if not p:
                 sys.exit(f"coordenar assumir: o diagnóstico não tem o problema `{alvo}`; use --resumo")
             resumo = resumo_do_problema(p)
-        return assumir(alvo, resumo, sessao_atual(), rotulos)
+        return assumir(alvo, resumo, sessao_atual(), rotulos, p)
     if sub == "status" and len(resto) >= 2:
         etapa = None
         if "--etapa" in resto:

@@ -75,8 +75,9 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
   3 issues e 3 PRs por sessão. Use os modelos em `.github/`.
 - Coordene pelas issues ([docs/autopilot.md](docs/autopilot.md)): `motor.py diagnosticar <pasta> --coordenar` e
   `motor.py coordenar listar` antes de escolher; pule alvos `em-andamento` de outra sessão. Antes de começar,
-  `coordenar assumir <alvo> --de <pasta>`: o título sai pontual, `[etapa] alvo: problema + número`, e ninguém precisa
-  abrir a issue para saber o que se faz. `coordenar status` a cada passo (`--etapa` acompanha no título; sem status
+  `coordenar assumir <alvo> --de <pasta>`: o título sai em português simples, `[AutoPilot: etapa] o que se faz (quanto pesa)`,
+  sem nomes internos, e o corpo leva a ficha técnica JSON (`spark-ficha`) que `coordenar listar --json` devolve:
+  leia as fichas em vez de abrir as issues. `coordenar status` a cada passo (`--etapa` acompanha no título; sem status
   por 24 h o alvo fica livre), `coordenar entregar <issue>` ao terminar, ou `coordenar liberar` ao desistir. Um
   `SPARK_SESSAO` por agente.
 - Entrega: `coordenar entregar` vê a permissão. Com escrita no repositório, vai direto (rebase, regras, push na

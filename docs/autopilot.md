@@ -36,13 +36,18 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    trabalha em quê, para um não passar por cima do outro.
    - **Antes de escolher:** `diagnosticar <pasta> --coordenar` marca os problemas que outra sessão já assumiu;
      `python scripts/motor.py coordenar listar` mostra todos os alvos em andamento. Pule os que estão ocupados.
-   - **Ao começar:** `coordenar assumir <alvo> --de <pasta da execução>` (ou `--resumo "<problema + número>"`, até
-     70 letras; o alvo é o `id` do problema, como `fase:copy_back`, ou um mais fino, como `pipeline:<hash>`). Abre a issue com o rótulo `em-andamento` e um título
-     que diz tudo sem abrir: `[em andamento] fase:copy_back: cópia de volta 70 ms/quadro (29 %)`. Se outra
+   - **Ao começar:** `coordenar assumir <alvo> --de <pasta da execução>` (ou `--resumo "<o que se faz (quanto pesa)>"`, até
+     85 letras e sem nomes internos; o alvo é o `id` do problema, como `fase:copy_back`, ou um mais fino, como `pipeline:<hash>`). Abre a issue com o rótulo `em-andamento` e um título
+     em português simples, que diz tudo sem abrir:
+     `[AutoPilot: em andamento] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)` ou
+     `[AutoPilot: testando] Fazer a placa aceitar shaders recusados (2 recusados: efeito faltando na tela)`. O corpo
+     leva a ficha técnica em JSON (bloco `spark-ficha`: alvo, métrica, evidência agregada, arquivos, chaves,
+     hashes, sugestão do motor), para a IA de outra pessoa entender sem ler o histórico;
+     `coordenar listar --json` devolve as fichas de todas as issues em andamento. Se outra
      sessão assumiu o mesmo alvo no mesmo instante, vale a issue mais antiga e a sua se fecha sozinha. Defina
      `SPARK_SESSAO` com um nome por agente quando vários usam a mesma conta.
    - **A cada passo:** `coordenar status <issue> "<o que foi feito, números agregados, próximo passo>"`, com
-     `--etapa "A/B"` ou `--etapa "PR aberto"` quando a etapa muda (o começo do título acompanha). O status é
+     `--etapa testando` ou `--etapa "PR aberto"` quando a etapa muda (o começo do título acompanha). O status é
      também o sinal de vida: sem status por 24 h, o alvo fica livre e outra sessão pode retomá-lo (`assumir` faz
      isso e comenta na issue).
    - **Ao terminar:** o PR diz `Fecha #<issue>`. Ao desistir: `coordenar liberar <issue> "<motivo e o que se
