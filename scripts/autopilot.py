@@ -55,19 +55,35 @@ def dentro_do_repo(caminho: Path) -> bool:
     return any((p / ".victory-root").exists() for p in [caminho, *caminho.parents])
 
 
+def game_dir_do_toml(texto: str) -> str | None:
+    """O `game_dir` de um victory.toml: em `[paths]`, como no victory.example.toml, ou no topo."""
+    # utf-8-sig no leitor tira o BOM que editores do Windows gravam; o executor em Rust também o aceita.
+    config = tomllib.loads(texto)
+    return config.get("paths", {}).get("game_dir") or config.get("game_dir")
+
+
+# O atributo Name de cada Executable; o espaço antes impede casar com OverrideDisplayName e afins.
+EXECUTAVEL = re.compile(r'<Executable\b[^>]*?\sName="([^"]+)"')
+
+
+def executaveis_do_manifesto(texto: str) -> list[str]:
+    """Os nomes de arquivo dos elementos Executable de um MicrosoftGame.config."""
+    return EXECUTAVEL.findall(texto)
+
+
 def achar_jogo(arg: str | None) -> Path:
     alvo = arg or os.environ.get("SPARK_JOGO")
     if not alvo and (RAIZ / "victory.toml").exists():
-        config = tomllib.loads((RAIZ / "victory.toml").read_text(encoding="utf-8"))
-        alvo = config.get("paths", {}).get("game_dir")
+        alvo = game_dir_do_toml((RAIZ / "victory.toml").read_text(encoding="utf-8-sig"))
     if not alvo:
         sys.exit("Informe o título: --jogo <pasta ou .exe>, SPARK_JOGO ou game_dir em victory.toml.")
     caminho = Path(alvo)
     if caminho.is_file():
         return caminho
-    config = caminho / "MicrosoftGame.config"
-    if config.exists():
-        nomes = re.findall(r'<Executable[^>]*Name="([^"]+)"', config.read_text(encoding="utf-8", errors="replace"))
+    # O pacote grava MicrosoftGame.Config ou .config; fora do Windows o nome distingue maiúsculas.
+    config = next((c for c in caminho.glob("*") if c.name.lower() == "microsoftgame.config"), None)
+    if config:
+        nomes = executaveis_do_manifesto(config.read_text(encoding="utf-8-sig", errors="replace"))
         if len(nomes) == 1:
             return caminho / nomes[0]
     exes = list(caminho.glob("*.exe"))
