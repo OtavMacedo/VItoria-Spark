@@ -47,6 +47,8 @@ mod drvwatch;
 pub mod dxgi;
 pub mod fence;
 #[cfg(windows)]
+mod compose;
+#[cfg(windows)]
 mod fpsbox;
 pub mod frame;
 #[cfg(windows)]
