@@ -3,6 +3,7 @@
 //! offsets or byte-pattern signatures). What may and may not be stored here
 //! is defined in docs/asset-policy.md.
 
+pub mod output;
 pub mod sgd5;
 
 /// A specific build of the title executable we know how to run.
@@ -14,6 +15,9 @@ pub struct KnownBuild {
     pub blake3: &'static str,
     /// Changes to its code made before it is mapped.
     pub patches: &'static [CodePatch],
+    /// Where it fixes its Series X output size, if known
+    /// ([`output::output_patches`]).
+    pub output: Option<output::OutputSites>,
 }
 
 /// A change to title code: at `rva`, the bytes `expect` (a short signature
@@ -55,6 +59,13 @@ pub const KNOWN_BUILDS: &[KnownBuild] = &[KnownBuild {
             write: UPSCALER_6,
         },
     ],
+    output: Some(output::OutputSites {
+        display_mode: 0x615_c100,
+        scanout_reservation: 0x247_ad4a,
+        scene_scale: 0x28f_1e7e,
+        ui_size_load: 0x580_48d4,
+        ui_size_load_stock: [0xc5, 0xfb, 0x10, 0x0d, 0x10, 0xf0, 0x13, 0x05],
+    }),
 }];
 
 /// Looks up a build by the BLAKE3 hash of its executable.
@@ -80,6 +91,20 @@ mod tests {
             for patch in build.patches {
                 assert!(!patch.write.is_empty(), "{}", patch.name);
                 assert_eq!(patch.expect.len(), patch.write.len(), "{}", patch.name);
+            }
+            // The output sites overlap neither each other nor a code patch:
+            // all are applied together and checked before any is written.
+            if let Some(sites) = &build.output {
+                let size = output::OutputSize::parse("1080p").unwrap();
+                let mut runs: Vec<(u32, usize)> = output::output_patches(sites, size, 1.0, 0)
+                    .iter()
+                    .map(|p| (p.rva, p.write.len()))
+                    .chain(build.patches.iter().map(|p| (p.rva, p.write.len())))
+                    .collect();
+                runs.sort();
+                for pair in runs.windows(2) {
+                    assert!(pair[0].0 + pair[0].1 as u32 <= pair[1].0, "{pair:?}");
+                }
             }
         }
         assert!(identify("00").is_none());

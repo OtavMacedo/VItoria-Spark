@@ -63,7 +63,7 @@ fn run_title(
         Some(build) => println!("build          {} ({hash})", build.label),
         None => println!("build          unknown ({hash})"),
     }
-    apply_title_patches(&mut prepared, build)?;
+    apply_title_patches(&mut prepared, build, console)?;
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
@@ -396,6 +396,7 @@ fn hex_str(bytes: &[u8]) -> String {
 fn apply_title_patches(
     prepared: &mut victory_loader::PreparedImage,
     build: Option<&victory_game::KnownBuild>,
+    console: Console,
 ) -> Result<()> {
     let mut patches = Vec::new();
     let mut names = Vec::new();
@@ -416,10 +417,26 @@ fn apply_title_patches(
         patches.push((rva, from_hex(parts[1])?, from_hex(parts[2])?));
         names.push("VICTORY_TITLE_PATCH".to_owned());
     }
+    let output = output_size_patches(build, console)?;
+    if let Some((_, _, more)) = &output {
+        for p in more {
+            patches.push((p.rva, p.expect.clone(), p.write.clone()));
+            names.push(p.name.to_owned());
+        }
+    }
     if patches.is_empty() {
         return Ok(());
     }
+    // One call: every expected run is checked before any is written, and
+    // the copy's name covers the whole set.
     prepared.patch(&patches)?;
+    if let Some((size, scene, _)) = output {
+        victory_gpu::dxgi::set_output_size(size.width, size.height);
+        println!(
+            "display        {}x{} SDR, scene {}x{}",
+            size.width, size.height, scene.width, scene.height
+        );
+    }
     for ((rva, old, new), name) in patches.iter().zip(names) {
         println!(
             "title patch    +{rva:#x} {name}: {} -> {}",
@@ -439,4 +456,88 @@ fn from_hex(s: &str) -> Result<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(anyhow::Error::from))
         .collect()
+}
+
+/// `VICTORY_OUTPUT_RESOLUTION=1080p|1440p|<W>x<H>` (16:9; off by default):
+/// a Series X output of that size instead of 3840x2160, made by the title
+/// itself, with its scene at `VICTORY_SCENE_SCALE` of it (`0.75` or `3/4`,
+/// 0.5 to 1; default 1, the scene at the output's size). Needs a known build
+/// with its output sites and the Series X profile. Returns the output, the
+/// scene and the patches.
+#[cfg(windows)]
+fn output_size_patches(
+    build: Option<&victory_game::KnownBuild>,
+    console: Console,
+) -> Result<
+    Option<(
+        victory_game::output::OutputSize,
+        victory_game::output::OutputSize,
+        Vec<victory_game::output::TitlePatch>,
+    )>,
+> {
+    use victory_game::output::{OutputSize, output_patches, parse_scene_scale};
+    let Ok(asked) = std::env::var("VICTORY_OUTPUT_RESOLUTION") else {
+        return Ok(None);
+    };
+    if asked.trim().is_empty() || asked.trim() == "0" {
+        return Ok(None);
+    }
+    let size = OutputSize::parse(&asked).map_err(anyhow::Error::msg)?;
+    let scale = match std::env::var("VICTORY_SCENE_SCALE") {
+        Ok(v) if !v.trim().is_empty() => parse_scene_scale(&v).map_err(anyhow::Error::msg)?,
+        _ => 1.0,
+    };
+    // The patched display mode is the one the title picks on a Series X.
+    anyhow::ensure!(
+        matches!(console, Console::SeriesX),
+        "VICTORY_OUTPUT_RESOLUTION needs the Series X profile"
+    );
+    let sites = build
+        .and_then(|b| b.output.as_ref())
+        .context("VICTORY_OUTPUT_RESOLUTION: the output size of this build is not known")?;
+    let patches = output_patches(sites, size, scale, scanout_reservation_bytes(size)?);
+    Ok(Some((size, size.scene(scale), patches)))
+}
+
+/// The bytes the title reserves for its two scanout buffers at `size`: two
+/// 64 KiB-aligned, tiled RGBA8 surfaces, the whole rounded up to 2 MiB as
+/// the title's allocation check expects.
+#[cfg(any(windows, test))]
+fn scanout_reservation_bytes(size: victory_game::output::OutputSize) -> Result<u32> {
+    use victory_formats::texture::{Dimension, Swizzle, Texture, TextureDesc};
+    let texture = Texture::new(&TextureDesc {
+        dimension: Dimension::Tex2d,
+        width: size.width,
+        height: size.height,
+        depth_or_array: 1,
+        mips: 1,
+        // DXGI_FORMAT_R8G8B8A8_UNORM.
+        format: 28,
+        samples: 1,
+        swizzle: Swizzle::SW_64KB_D_X,
+    })
+    .map_err(|error| anyhow::anyhow!("scanout layout: {error:?}"))?;
+    Ok(u32::try_from(
+        (texture.size.next_multiple_of(64 << 10) * 2).next_multiple_of(2 << 20),
+    )?)
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::scanout_reservation_bytes;
+    use victory_game::output::{LEGACY_CANVAS, OutputSize};
+
+    /// The stock size reproduces the stock reservation (64 MiB); smaller
+    /// outputs reserve less, in 2 MiB steps.
+    #[test]
+    fn scanout_reservations() {
+        assert_eq!(scanout_reservation_bytes(LEGACY_CANVAS).unwrap(), 64 << 20);
+        for (text, mib) in [("1440p", 30), ("1080p", 18)] {
+            let size = OutputSize::parse(text).unwrap();
+            let bytes = scanout_reservation_bytes(size).unwrap();
+            assert_eq!(bytes % (2 << 20), 0, "{text}");
+            assert!(u64::from(bytes) >= 2 * u64::from(size.width * size.height * 4));
+            assert_eq!(bytes >> 20, mib, "{text}");
+        }
+    }
 }
