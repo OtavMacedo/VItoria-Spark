@@ -37,6 +37,9 @@ jobs:
       # Unit tests of the helper scripts (standard library only, no title files).
       - name: Script tests
         run: python -m unittest discover -s scripts -p "teste_*.py"
+      # O motor de diagnóstico (scripts/motor): dados sintéticos, sem dependências.
+      - name: Testes do motor
+        run: python -m unittest discover -s scripts/tests
       # The version and components pinned in rust-toolchain.toml.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2

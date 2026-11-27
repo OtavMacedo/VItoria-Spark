@@ -14,6 +14,10 @@ Uso:
   já tem `--amostras` linhas da cena estável (padrão 60, 0 sem teto) ou no tempo. Com `SPARK_AB=CHAVE` (A/B dentro da
   execução), para quando a diferença entre os braços é significativa ou o intervalo dela fica estreito.
 
+- No fim, `rodar` chama o motor (`scripts/motor.py diagnosticar`): todos os problemas da execução em ordem, o
+  plano da próxima (`plano.toml`) e, com A/B, o veredito. `SPARK_OFFLINE=1` vai ligado (os shaders com falha ficam
+  na pasta da sessão para `motor.py reproduzir`; `SPARK_OFFLINE=0` desliga).
+
 - `confirmar` registra, fora do repositório, que a pessoa declarou usar a própria cópia, obtida legalmente. O
   AutoPilot não roda sem isso (docs/autopilot.md).
 - O título vem de `--jogo`, de `SPARK_JOGO` ou do `game_dir` de `victory.toml`.
@@ -203,6 +207,7 @@ def rodar(args: list[str]) -> int:
         VICTORY_CAPTURE_WORLD_EVERY="64",
         VICTORY_KEYS=",".join(f"{t}:Enter" for t in range(20, 250, 10)),
         SPARK_LOG_DIR=str(pasta),
+        SPARK_OFFLINE="1",
     )
     env.update(extra)
     trava = BASE / ".autopilot.lock"
@@ -242,16 +247,21 @@ def rodar(args: list[str]) -> int:
     resumos = sorted(pasta.rglob("resumo.md"))
     print(f"{nome}: {fim} após {time.time() - inicio:.0f} s, código {p.returncode}")
     print(parada.estado())
-    if parada.ab:
-        # O veredito de 20 linhas (scripts/veredito.py), com o piso de ruído se houver.
+    motor = [sys.executable, str(RAIZ / "scripts" / "motor.py")]
+    if parada.ab and resumos:
+        # O veredito (um por experimento do plano), com o piso de ruído se houver.
         ruido = BASE / "ruido.json"
-        cmd = [sys.executable, str(RAIZ / "scripts" / "veredito.py"), str(pasta)]
-        if ruido.exists():
-            cmd += ["--ruido", str(ruido)]
-        subprocess.run(cmd)
+        cmd = motor + ["ab", str(pasta)] + (["--ruido", str(ruido)] if ruido.exists() else [])
+        for exp in range(len(parada.experimentos)) if parada.plano else [None]:
+            subprocess.run(cmd + (["--exp", str(exp)] if exp is not None else []))
     print(f"pasta: {pasta}")
     if resumos:
         print(f"resumo: {resumos[-1]}")
+        # O diagnóstico inteiro fica na pasta; aqui só o estado e os primeiros problemas.
+        r = subprocess.run(motor + ["diagnosticar", str(pasta)], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace")
+        print("\n".join(r.stdout.splitlines()[:24]))
+        print(f"diagnóstico: {resumos[-1].parent / 'diagnostico.md'}")
     return 0
 
 

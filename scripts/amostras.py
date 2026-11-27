@@ -12,6 +12,8 @@ enquanto ele cresce e diz quando parar.
 - Com `SPARK_AB` (ou `CHAVE=alt`): lê os blocos do `ab` do `resumo.json` da sessão (reescrito a cada ~60 s) e aplica a
   parada sequencial de `scripts/ab_estat.py` (GANHO, REGRESSAO ou SEM_EFEITO com 6+ pares); passados `teto_ab_s`
   (480) segundos de cena estável sem decisão, para como INCONCLUSIVO.
+- Fatorial (`SPARK_AB=A*B*C`, ou `ab = "A*B*C"` num plano): cada fator decide sozinho com a mesma regra; a execução
+  (ou o experimento) para quando todos decidiram, e o teto cresce com o número de fatores (`motor/plano.py`).
 - Com `SPARK_PLAN=<plano.toml>` (vários experimentos numa execução): a mesma regra por experimento; ao decidir um,
   escreve o número do seguinte em `<plano.toml>.atual` (o motor passa a ele na próxima troca de bloco, depois de um
   bloco de lavagem) e para a execução depois do último. `resultados` guarda a decisão estatística de cada um.
@@ -28,7 +30,8 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ab_estat import analisar  # noqa: E402
+from motor.estat import analisar, fatores  # noqa: E402
+from motor.plano import teto_s  # noqa: E402
 
 ANSI = re.compile(rb"\x1b\[[0-9;]*m")
 LINHA = re.compile(
@@ -170,17 +173,22 @@ class Parada:
                 return None
             # Medido na cena estável há mais que o teto: decide com o que tem (INCONCLUSIVO, se não fechou).
             inicio = max(filter(None, [self.estavel_t, self.exp_desde_t]), default=None)
+            limite = max(self.teto_ab_s, teto_s(len(fatores(ab))))
             teto = (self.estavel_t is not None and self.ultima_t is not None and inicio is not None
-                    and self.ultima_t - inicio >= self.teto_ab_s)
+                    and self.ultima_t - inicio >= limite)
             v = analisar(ab, teto=teto)
             self.ab_analise = v
             if v["estado"] == "CONTINUA":
                 return None
-            if "efeito_pct" in v:
-                efeito = f"{v['efeito_pct']:+.1f} % (IC 95 % {v['ic95_pct'][0]:+.1f} a {v['ic95_pct'][1]:+.1f})"
+            if v.get("fatores"):
+                frase = f"fatorial {v['estado']} em {v['blocos']} blocos: " + "; ".join(
+                    f"{f['fator']} {f['estado']} {f['efeito_pct']:+.1f} %" for f in v["fatores"])
             else:
-                efeito = "sem estimativa"
-            frase = f"A/B {v['estado']} em {v['pares']} pares: quadro de B contra A {efeito}"
+                if "efeito_pct" in v:
+                    efeito = f"{v['efeito_pct']:+.1f} % (IC 95 % {v['ic95_pct'][0]:+.1f} a {v['ic95_pct'][1]:+.1f})"
+                else:
+                    efeito = "sem estimativa"
+                frase = f"A/B {v['estado']} em {v['pares']} pares: quadro de B contra A {efeito}"
             if not self.plano:
                 return frase
             self.resultados.append({"experimento": self.experimentos[self.exp], **v})
