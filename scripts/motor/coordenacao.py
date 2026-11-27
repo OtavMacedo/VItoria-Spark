@@ -9,9 +9,9 @@ O alvo é o `id` de um problema do diagnóstico (`fase:copy_back`, `pipelines_re
 (`pipeline:02384a60fda6f2d0`). Só números agregados vão para as issues (docs/asset-policy.md).
 
 O título diz, em português simples, o que está sendo feito e quanto pesa, sem abrir a issue:
-`[AutoPilot: em andamento] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)`. Nada de nome interno (`fase:...`,
-`pipelines_recusadas`): o alvo técnico fica na marca do corpo. A etapa muda com o trabalho (`em andamento`,
-`testando`, `PR aberto`, `resolvido`, `livre`), então `gh issue list` já mostra quem faz o quê e onde está.
+`[AutoPilot Status] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)`. Nada de nome interno (`fase:...`,
+`pipelines_recusadas`): o alvo técnico fica na marca do corpo. O prefixo é sempre o mesmo; em que pé está o trabalho
+dizem o rótulo `em-andamento` e o último comentário de status.
 
 Para a IA de outra pessoa, o corpo traz uma ficha técnica em JSON (bloco ```spark-ficha```): alvo, componente,
 métrica, evidência agregada, arquivos de código, chaves a testar, hashes verificáveis sem o título e a sugestão do
@@ -52,14 +52,18 @@ def etapa_simples(etapa: str) -> str:
     return ETAPAS.get(etapa.strip().lower(), etapa.strip())
 
 
-def titulo(etapa: str, resumo: str) -> str:
-    """`[AutoPilot: etapa] resumo`, cortado no limite de um título que se lê inteiro numa lista."""
-    t = f"[AutoPilot: {etapa_simples(etapa)}] {' '.join(resumo.split())}"
+PREFIXO = "[AutoPilot Status]"
+
+
+def titulo(resumo: str) -> str:
+    """`[AutoPilot Status] resumo`, cortado no limite de um título que se lê inteiro numa lista."""
+    t = f"{PREFIXO} {' '.join(resumo.split())}"
     return t if len(t) <= TITULO_MAX else t[:TITULO_MAX - 1].rstrip() + "…"
 
 
-def trocar_etapa(atual: str, etapa: str) -> str:
-    return f"[AutoPilot: {etapa_simples(etapa)}] {ETAPA.sub('', atual, count=1)}"
+def prefixar(atual: str) -> str:
+    """O título com o prefixo padrão no lugar de qualquer prefixo entre colchetes."""
+    return f"{PREFIXO} {ETAPA.sub('', atual, count=1)}"
 
 
 def resumo_do_problema(p: dict) -> str:
@@ -229,13 +233,13 @@ def assumir(alvo: str, resumo: str, sessao: str, rotulos: list[str], problema: d
         n = d["issue"]
         corpo = _gh("issue", "view", str(n), "--json", "body", "-q", ".body")
         _gh("issue", "edit", str(n), "--body-file", "-", "--add-label", ROTULO,
-            "--title", titulo("em andamento", resumo), entrada=MARCA.sub(marca(alvo, sessao), corpo))
+            "--title", titulo(resumo), entrada=MARCA.sub(marca(alvo, sessao), corpo))
         _comentar(n, f"**[AutoPilot Status]** ({_carimbo()}): retomado por outra sessão; o último status tinha mais de "
                      f"{VALIDADE_H:.0f} h.")
         print(f"retomado: #{n}")
         return 0
     corpo = corpo_da_issue(alvo, sessao, ficha(alvo, problema))
-    url = _gh("issue", "create", "--title", titulo("em andamento", resumo), "--body-file", "-", "--label",
+    url = _gh("issue", "create", "--title", titulo(resumo), "--body-file", "-", "--label",
               ",".join(["autopilot", ROTULO, *rotulos]), entrada=corpo).strip()
     n = int(url.rstrip("/").rsplit("/", 1)[-1])
     # Duas sessões podem abrir ao mesmo tempo: vale a issue mais antiga, e a outra se fecha como duplicada.
@@ -249,24 +253,15 @@ def assumir(alvo: str, resumo: str, sessao: str, rotulos: list[str], problema: d
     return 0
 
 
-def _etapa(numero: int, etapa: str) -> None:
-    atual = _gh("issue", "view", str(numero), "--json", "title", "-q", ".title").strip()
-    novo = trocar_etapa(atual, etapa)
-    if novo != atual:
-        _gh("issue", "edit", str(numero), "--title", novo)
-
-
 def status(numero: int, texto: str, etapa: str | None = None) -> int:
-    _comentar(numero, f"**[AutoPilot Status]** ({_carimbo()}): {texto}")
-    if etapa:
-        _etapa(numero, etapa)
+    em = f" **Etapa: {etapa_simples(etapa)}.**" if etapa else ""
+    _comentar(numero, f"**[AutoPilot Status]** ({_carimbo()}):{em} {texto}")
     return 0
 
 
 def liberar(numero: int, motivo: str) -> int:
     _comentar(numero, f"**[AutoPilot Status]** ({_carimbo()}): liberado. {motivo}".strip())
     _gh("issue", "edit", str(numero), "--remove-label", ROTULO)
-    _etapa(numero, "livre")
     return 0
 
 
@@ -342,10 +337,10 @@ USO = """Uso:
   python scripts/motor.py coordenar listar [--json]
   python scripts/motor.py coordenar assumir <alvo> (--de <sessão> | --resumo "<o que se faz (quanto pesa)>")
                                                     [--rotulo nvidia ...]
-      Título: `[AutoPilot: em andamento] <resumo>`, em português simples (até 85 letras, sem nomes internos); com `--de`, o
+      Título: `[AutoPilot Status] <resumo>`, em português simples (até 85 letras, sem nomes internos); com `--de`, o
       resumo sai do diagnóstico da execução. Ex.: "Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)".
   python scripts/motor.py coordenar status <issue> "<o que foi feito e o próximo passo>" [--etapa "A/B"]
-      `--etapa` troca o começo do título (`testando`, `PR aberto`, `resolvido`...).
+      `--etapa` diz no comentário em que pé está (`testando`, `PR aberto`, `resolvido`...).
   python scripts/motor.py coordenar liberar <issue> ["<motivo>"]
   python scripts/motor.py coordenar entregar <issue> [--pr]
       Quem pode escrever no repositório entrega direto: rebase, regras do projeto, push na principal, issue fechada.

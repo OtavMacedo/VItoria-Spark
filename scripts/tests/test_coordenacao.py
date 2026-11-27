@@ -54,21 +54,21 @@ class Coordenacao(unittest.TestCase):
         ps = c.anotar([{"id": "fase:gpu"}, {"id": "memoria"}, {"id": "descartes"}], r, "b")
         self.assertEqual([p.get("em_andamento") for p in ps], [5, None, None])
 
-    def test_o_titulo_diz_etapa_e_o_que_se_faz(self):
-        self.assertEqual(c.titulo("em andamento", "Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)"),
-                         "[AutoPilot: em andamento] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)")
-
-    def test_etapa_tecnica_vira_palavra_simples(self):
-        self.assertEqual(c.titulo("A/B", "Reduzir travadas de mais de 1 s"), "[AutoPilot: testando] Reduzir travadas de mais de 1 s")
+    def test_o_titulo_tem_prefixo_fixo_e_o_que_se_faz(self):
+        self.assertEqual(c.titulo("Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)"),
+                         "[AutoPilot Status] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)")
 
     def test_titulo_longo_e_cortado(self):
-        t = c.titulo("em andamento", "x" * 200)
+        t = c.titulo("x" * 200)
         self.assertEqual(len(t), c.TITULO_MAX)
         self.assertTrue(t.endswith("…"))
 
-    def test_trocar_a_etapa_mantem_o_resto(self):
-        self.assertEqual(c.trocar_etapa("[AutoPilot: em andamento] Reduzir a espera pela placa (126 ms por quadro, 50 %)", "PR aberto"),
-                         "[AutoPilot: PR aberto] Reduzir a espera pela placa (126 ms por quadro, 50 %)")
+    def test_prefixar_troca_um_prefixo_antigo(self):
+        self.assertEqual(c.prefixar("[PR aberto] Fazer a placa aceitar 2 shaders recusados"),
+                         "[AutoPilot Status] Fazer a placa aceitar 2 shaders recusados")
+
+    def test_etapa_tecnica_vira_palavra_simples(self):
+        self.assertEqual(c.etapa_simples("A/B"), "testando")
 
     def test_resumo_de_uma_fase_diz_a_acao_e_o_peso(self):
         p = {"id": "fase:copy_back", "titulo": "Cópia de volta", "custo_ms": 77.2, "parte_pct": 31.4}

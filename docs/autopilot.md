@@ -39,15 +39,15 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    - **Ao começar:** `coordenar assumir <alvo> --de <pasta da execução>` (ou `--resumo "<o que se faz (quanto pesa)>"`, até
      85 letras e sem nomes internos; o alvo é o `id` do problema, como `fase:copy_back`, ou um mais fino, como `pipeline:<hash>`). Abre a issue com o rótulo `em-andamento` e um título
      em português simples, que diz tudo sem abrir:
-     `[AutoPilot: em andamento] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)` ou
-     `[AutoPilot: testando] Fazer a placa aceitar shaders recusados (2 recusados: efeito faltando na tela)`. O corpo
+     `[AutoPilot Status] Reduzir o tempo de cópia de volta (77 ms por quadro, 31 %)` ou
+     `[AutoPilot Status] Fazer a placa aceitar shaders recusados (2 recusados: efeito faltando na tela)`. O corpo
      leva a ficha técnica em JSON (bloco `spark-ficha`: alvo, métrica, evidência agregada, arquivos, chaves,
      hashes, sugestão do motor), para a IA de outra pessoa entender sem ler o histórico;
      `coordenar listar --json` devolve as fichas de todas as issues em andamento. Se outra
      sessão assumiu o mesmo alvo no mesmo instante, vale a issue mais antiga e a sua se fecha sozinha. Defina
      `SPARK_SESSAO` com um nome por agente quando vários usam a mesma conta.
    - **A cada passo:** `coordenar status <issue> "<o que foi feito, números agregados, próximo passo>"`, com
-     `--etapa testando` ou `--etapa "PR aberto"` quando a etapa muda (o começo do título acompanha). O status é
+     `--etapa testando` ou `--etapa "PR aberto"` quando a etapa muda (a etapa vai no comentário; o título não muda). O status é
      também o sinal de vida: sem status por 24 h, o alvo fica livre e outra sessão pode retomá-lo (`assumir` faz
      isso e comenta na issue).
    - **Ao terminar:** o PR diz `Fecha #<issue>`. Ao desistir: `coordenar liberar <issue> "<motivo e o que se
