@@ -45,7 +45,8 @@ def ler_saida(saida: str) -> dict[str, list[str]]:
     por: dict[str, list[str]] = {}
     for linha in saida.splitlines():
         m = _ARQUIVO.search(linha)
-        if not m or "  " not in linha:
+        # A linha de resumo de cada motivo cita um programa como exemplo: não é o desfecho dele.
+        if not m or "  " not in linha or "(e.g. " in linha:
             continue
         por.setdefault(m.group(1), []).append(linha.rsplit("  ", 1)[1].strip())
     return por

@@ -176,6 +176,9 @@ class Medicao(ComSessao):
         r = resumo(long_world_frames_over_1s=2)
         r["memory"].update(page_faults_per_s_in_long_frames=400000, ram_free_min_mb=900)
         self.assertEqual(self.ids(r), {"tempestade_de_faltas": False, "ram_baixa": False})
+        # Quadros longos que uma fase explica não são tempestade, mesmo com muitas falhas de página.
+        r["long_frame_causes"] = [{"cause": "remap", "frames": 2, "ms": 3000}]
+        self.assertEqual(self.ids(r), {"ram_baixa": False})
 
     def test_caches_frios(self):
         r = resumo()
@@ -362,7 +365,8 @@ class Offline(ComSessao):
     ]
     SAIDA = ("containers   2 (0 duplicates skipped)\n"
              "<X>/offline/00112233aabbccdd.pixel.cdxil@0x0 #00112233aabbccdd ~0a0b0c0d Ps  pipeline created\n"
-             "<X>/offline/8899aabbccddeeff.compute.cdxil@0x0 #8899aabbccddeeff ~01020304 Cs  pipeline: refused\n")
+             "<X>/offline/8899aabbccddeeff.compute.cdxil@0x0 #8899aabbccddeeff ~01020304 Cs  pipeline: refused\n"
+             "        1  pipeline: refused  (e.g. <X>/offline/8899aabbccddeeff.compute.cdxil@0x0 Cs)\n")
 
     def test_cada_falha_guardada_e_julgada_contra_o_build_atual(self):
         s = self.sessao(resumo())

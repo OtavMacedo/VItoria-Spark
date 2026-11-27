@@ -69,7 +69,11 @@ def verificar(s: Sessao) -> list[dict]:
     nos_longos = mem.get("page_faults_per_s_in_long_frames") or 0
     media = mem.get("page_faults_per_s_mean")
     longos = r.get("long_world_frames_over_1s", 0)
-    if longos and nos_longos > FALTAS_POR_S and (media is None or nos_longos > FALTAS_VEZES_A_MEDIA * media):
+    # Com as causas por quadro (resumo novo), só é tempestade se algum quadro longo ficou sem fase que o explique.
+    causas = r.get("long_frame_causes")
+    sem_fase = not causas or any(c["cause"] in ("page_faults", "unexplained") for c in causas)
+    if (longos and sem_fase and nos_longos > FALTAS_POR_S
+            and (media is None or nos_longos > FALTAS_VEZES_A_MEDIA * media)):
         out.append(_achado("tempestade_de_faltas", s.parte_em_quadros_longos_pct() >= FALTAS_PARTE_GRAVE_PCT,
                            f"{longos} quadro(s) de mais de 1 s com {nos_longos:.0f} falhas de página por segundo "
                            f"(média da execução: {media or 0:.0f})",
