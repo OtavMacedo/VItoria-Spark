@@ -421,10 +421,14 @@ class Offline(ComSessao):
          "file": "8899aabbccddeeff.compute.cdxil", "error": "E_INVALIDARG", "pipeline": "compute 8899aabbccddeeff"},
         {"kind": "refused", "hash": "1111111111111111", "stage": "vertex", "bytes": 10, "file": None,
          "error": "e", "pipeline": ""},
+        {"kind": "refused", "hash": "2222222222222222", "stage": "pixel", "bytes": 10,
+         "file": "2222222222222222.pixel.cdxil", "error": "E_INVALIDARG",
+         "pipeline": "vertex 3333333333333333 + pixel 2222222222222222", "state": "estado de teste"},
     ]
     SAIDA = ("containers   2 (0 duplicates skipped)\n"
              "<X>/offline/00112233aabbccdd.pixel.cdxil@0x0 #00112233aabbccdd ~0a0b0c0d Ps  pipeline created\n"
              "<X>/offline/8899aabbccddeeff.compute.cdxil@0x0 #8899aabbccddeeff ~01020304 Cs  pipeline: refused\n"
+             "<X>/offline/2222222222222222.pixel.cdxil@0x0 #2222222222222222 ~0a0b0c0e Ps  pipeline created\n"
              "        1  pipeline: refused  (e.g. <X>/offline/8899aabbccddeeff.compute.cdxil@0x0 Cs)\n")
 
     def test_cada_falha_guardada_e_julgada_contra_o_build_atual(self):
@@ -432,12 +436,26 @@ class Offline(ComSessao):
         s.offline.mkdir()
         (s.offline / "manifesto.jsonl").write_text("\n".join(json.dumps(x) for x in self.MANIFESTO), encoding="utf-8")
         manifesto = offline.ler_manifesto(s.offline)
-        self.assertEqual(len(manifesto), 3)
+        self.assertEqual(len(manifesto), 4)
         itens = offline.julgar(manifesto, offline.ler_saida(self.SAIDA))
-        self.assertEqual([i["estado"] for i in itens], ["CORRIGIDO", "AINDA_FALHA", "SEM_ARQUIVO"])
+        # A pipeline gráfica que passa com o estado genérico não prova nada: nunca falhou sem o título.
+        self.assertEqual([i["estado"] for i in itens], ["CORRIGIDO", "AINDA_FALHA", "SEM_ARQUIVO", "SO_NA_EXECUCAO"])
         self.assertEqual(itens[1]["agora"], ["pipeline: refused"])
+        self.assertEqual((itens[3]["exato"], itens[3]["estado_grafico"]), (False, "estado de teste"))
         texto = offline.md({"estado": "RESTAM_FALHAS", "itens": itens, "contagem": {"CORRIGIDO": 1}})
         self.assertIn("**AINDA_FALHA**", texto)
+        self.assertIn("só a execução confirma", texto)
+
+    def test_recusa_grafica_so_e_corrigida_se_ja_falhou_sem_o_titulo(self):
+        s = self.sessao(resumo())
+        self.assertEqual(offline.ja_reproduzidos(s.pasta), set())
+        (s.pasta / "reproducao.json").write_text(json.dumps({"reproduzidos": ["2222222222222222.pixel"]}),
+                                                 encoding="utf-8")
+        itens = offline.julgar(self.MANIFESTO[4:], offline.ler_saida(self.SAIDA), offline.ja_reproduzidos(s.pasta))
+        self.assertEqual([i["estado"] for i in itens], ["CORRIGIDO"])
+        falha = self.SAIDA.replace("Ps  pipeline created\n\"", "").replace(
+            "~0a0b0c0e Ps  pipeline created", "~0a0b0c0e Ps  pipeline: refused")
+        self.assertEqual(offline.julgar(self.MANIFESTO[4:], offline.ler_saida(falha))[0]["estado"], "AINDA_FALHA")
 
     def test_sem_manifesto_nao_ha_o_que_reproduzir(self):
         r = offline.reproduzir(self.sessao(resumo()))

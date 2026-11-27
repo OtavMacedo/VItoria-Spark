@@ -114,11 +114,24 @@ por falha em `manifesto.jsonl`. São dados do título: ficam na pasta da sessão
 Limites por execução: 512 contêineres, 256 MB.
 
 `motor.py reproduzir <sessão>` roda `victory translate <offline> --pipelines --list` com a largura de onda e o
-limite de vistas que a execução teve, e compara cada item com o erro de antes: `CORRIGIDO`, `AINDA_FALHA`,
-`SEM_ARQUIVO`. Passe as chaves do tradutor que quiser testar como `CHAVE=valor`.
+limite de vistas que a execução teve, e compara cada item com o erro de antes. Passe as chaves do tradutor que
+quiser testar como `CHAVE=valor`.
 
-Limite conhecido: o `translate` cria a pipeline de cada shader com um estado gráfico genérico. Recusas de compute
-são reproduzidas por inteiro; uma recusa que dependa do estado gráfico do título só se confirma na execução.
+| Falha guardada | O que a verificação refaz | Estados possíveis |
+|---|---|---|
+| shader que não traduz | tudo: a tradução só depende do contêiner e das chaves do tradutor | `CORRIGIDO`, `AINDA_FALHA` |
+| pipeline de compute recusada | tudo: um shader só, sem estado gráfico | `CORRIGIDO`, `AINDA_FALHA` |
+| pipeline gráfica recusada | cada shader **sozinho**, com um par genérico no outro estágio e um estado gráfico simples, não o do título | `AINDA_FALHA`, `SO_NA_EXECUCAO`, e `CORRIGIDO` só se já falhou aqui fora |
+
+O estado gráfico do título de uma pipeline recusada (mistura, rasterização, profundidade, entradas, formatos dos
+alvos) fica guardado no manifesto, campo `state`, para quem investiga; o `translate` ainda não cria a pipeline com
+ele. Por isso uma pipeline gráfica que passa na verificação sem nunca ter falhado nela sai `SO_NA_EXECUCAO`: a
+recusa dependia do que a verificação não tem, e só uma execução confirma. Para poder dar `CORRIGIDO` a uma recusa
+gráfica, rode `reproduzir --gravar` **antes** da correção: o que falhar ali fica lembrado em `reproducao.json`
+(`reproduzidos`). `SEM_ARQUIVO` é a falha que passou do limite de contêineres da execução.
+
+A gravação recusa uma pasta de sessão dentro do repositório (`SPARK_LOG_DIR` não definido e o título iniciado de
+dentro dele): nenhum contêiner é escrito e o log avisa.
 
 ## Módulos (`scripts/motor/`)
 

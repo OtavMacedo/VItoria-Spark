@@ -45,8 +45,9 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    SPARK_PLAN=<pasta>/plano.toml` julga todas de uma vez, com um veredito por chave e o aviso de interação.
    **Correções do tradutor, nenhuma execução:** shaders que não traduzem e pipelines recusadas ficam guardados na
    pasta da sessão (`SPARK_OFFLINE=1`, que `rodar` liga); `python scripts/motor.py reproduzir <pasta>` retraduz e
-   cria as pipelines na placa com o build atual e diz o que ficou `CORRIGIDO`. O título só roda de novo no fim do
-   lote, para confirmar.
+   cria as pipelines na placa com o build atual e diz o que ficou `CORRIGIDO`. Rode-o uma vez com `--gravar`
+   antes de mexer no tradutor: uma pipeline gráfica só pode sair `CORRIGIDO` sem o título se falhou assim antes
+   ([motor.md](motor.md)). O título só roda de novo no fim do lote, para confirmar.
    O julgamento é sempre o de `python scripts/motor.py ab <pasta da execução>` (A/B na execução) ou
    `python scripts/motor.py comparar --a <execuções> --b <execuções>` (entre execuções): 20 linhas e um estado só
    (GANHO, SEM_EFEITO, INCONCLUSIVO, REGRESSAO, PROBLEMA_DE_MEDICAO). GANHO exige o quadro 3 %+ mais curto com
