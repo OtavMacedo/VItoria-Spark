@@ -2622,6 +2622,9 @@ impl<'a> Lower<'a> {
             Input::ThreadIdInGroup(c) => return self.thread_id(c),
             Input::GroupId(c) => return self.compute_id("groupId.i32", 94, c),
             Input::GroupInfo => return Val::Missing("the thread-group info SGPR"),
+            // shortcut: the host orders nothing; bit 31 clear says the wave
+            // overlaps no earlier one, so the program skips its wait.
+            Input::PopsCollision => return Val::I32(self.s.m.i32(0)),
             Input::MeshGroup => {
                 let Val::I32(g) = self.compute_id("groupId.i32", 94, 0) else {
                     unreachable!()
@@ -3507,6 +3510,9 @@ impl<'a> Lower<'a> {
                 let v = inst.read(Reg::V(reg)).ok_or("an unread operand")?;
                 self.i32_of(v)
             }
+            // shortcut: no wave ever leaves an ordered section on the host
+            // ([`Input::PopsCollision`] says none overlaps).
+            Operand::Const(crate::io::POPS_EXITING_WAVE_ID) => Ok(self.s.m.i32(0)),
             Operand::Const(c) => crate::resource::inline(c)
                 .map(|x| self.s.m.i32(x))
                 .ok_or("a special operand (vccz, execz, scc, lds_direct)"),

@@ -70,6 +70,10 @@ pub enum Input {
     MeshGroup,
     /// Mesh: s3, the wave's index in the group in bits 24-27.
     MergedWaveInfo,
+    /// Pixel: the SGPR after the primitive mask in a program that orders
+    /// overlapping pixels (POPS): the packer, the wave ids to wait for, and
+    /// in bit 31 whether the wave overlaps an earlier one.
+    PopsCollision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,10 +208,23 @@ pub fn raise(p: &Program, native: &NativeProgram) -> Result<Io, ShaderError> {
             HwStage::Ps,
         ) => {
             // A pixel shader exports no parameters; `[]` never reaches `Unread`.
-            let loaded = ps_vgprs(*input_addr)
+            let mut loaded: Vec<(Reg, Input)> = ps_vgprs(*input_addr)
                 .into_iter()
                 .map(|(r, i)| (Reg::V(r), i))
                 .collect();
+            // The user SGPRs, then the primitive mask, then (ordered pixels
+            // only) the collision SGPR.
+            if orders_pixels(p) {
+                let user = native
+                    .layout
+                    .iter()
+                    .map(|r| u32::from(r.user_data) + r.sgprs)
+                    .max()
+                    .unwrap_or(0);
+                if let Ok(s) = u8::try_from(user + 1) {
+                    loaded.push((Reg::S(s), Input::PopsCollision));
+                }
+            }
             (loaded, &inputs[..], &[][..])
         }
         (StageIo::Vs { inputs, outputs }, HwStage::Vs) => {
@@ -507,6 +524,23 @@ pub fn raise(p: &Program, native: &NativeProgram) -> Result<Io, ShaderError> {
         }
     }
     Ok(io)
+}
+
+/// `src_pops_exiting_wave_id`: the id of the last wave that left the
+/// ordered section.
+pub(crate) const POPS_EXITING_WAVE_ID: u8 = 239;
+
+/// Whether `p` waits for the earlier waves of overlapping pixels (POPS):
+/// it reads [`POPS_EXITING_WAVE_ID`].
+fn orders_pixels(p: &Program) -> bool {
+    p.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+        let src: &[Operand] = match &i.fields {
+            Fields::Sop { src, .. } => src,
+            Fields::Valu(v) => &v.src,
+            _ => &[],
+        };
+        src.contains(&Operand::Const(POPS_EXITING_WAVE_ID))
+    })
 }
 
 /// The pixel input VGPRs that `addr` enables, with their meaning.
@@ -813,6 +847,32 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(&io.interps[..], [(_, Interp::Weighted { .. })]));
+    }
+
+    #[test]
+    fn ordered_pixels_read_the_collision_sgpr() {
+        // One user SGPR at s2: the primitive mask in s3, the collision in s4.
+        let table = crate::native::RootParam {
+            root: crate::native::RootType::Table,
+            table_offset_dwords: 0,
+            sgprs: 1,
+            base_register: 0,
+            user_data: 2,
+            slot: 0,
+        };
+        let mut native = pixel(vec![], 0);
+        native.layout = vec![table];
+        let ordered = program(&[
+            0x9000_9F04, // s_lshr_b32 s0, s4, 31
+            0x8102_01EF, // s_add_i32 s2, src_pops_exiting_wave_id, s1
+            S_ENDPGM,
+        ]);
+        let io = raise(&ordered, &native).unwrap();
+        let s4 = ordered.inputs.iter().find(|i| i.0 == Reg::S(4)).unwrap().1;
+        assert_eq!(io.inputs, [(s4, Input::PopsCollision)]);
+        // Without the wait s4 is no input the hardware loads.
+        let plain = program(&[0x9000_9F04, S_ENDPGM]);
+        assert!(raise(&plain, &native).unwrap().inputs.is_empty());
     }
 
     #[test]
