@@ -25,6 +25,7 @@
 mod ab;
 pub mod anon;
 mod json;
+pub mod offline;
 pub mod summary;
 pub mod system;
 
@@ -215,6 +216,15 @@ fn start_in(base: &Path, build: BuildInfo, game_dir: Option<&Path>) -> Option<Pa
     let shown = session.anon.apply(&dir.to_string_lossy()).into_owned();
     tracing::info!(dir = %shown, "session log (eventos.jsonl, resumo.md)");
     Some(dir)
+}
+
+/// `text` with personal details replaced, as the session's files have it;
+/// unchanged before a session starts.
+pub(crate) fn anonymise(text: &str) -> String {
+    match SESSION.get() {
+        Some(s) => s.anon.apply(text).into_owned(),
+        None => text.to_owned(),
+    }
 }
 
 /// The session's folder, once started.

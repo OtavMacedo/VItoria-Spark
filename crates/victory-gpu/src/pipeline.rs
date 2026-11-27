@@ -169,18 +169,42 @@ impl Shader {
                         samplers = t.host.samplers.len(),
                         "shader translated"
                     ),
-                    Err(e) => tracing::warn!(
-                        spark.kind = "shader_untranslated",
-                        spark.instruction = untranslated(e),
-                        stage = self.stage,
-                        hash = %self.hash,
-                        error = %e,
-                        "shader does not translate; its pipelines' draws are dropped"
-                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            spark.kind = "shader_untranslated",
+                            spark.instruction = untranslated(e),
+                            spark.bytes = self.container.len() as u64,
+                            stage = self.stage,
+                            hash = %self.hash,
+                            error = %e,
+                            "shader does not translate; its pipelines' draws are dropped"
+                        );
+                        self.record_offline("untranslated", e, "");
+                    }
                 }
                 done.ok()
             })
             .as_ref()
+    }
+}
+
+#[cfg(windows)]
+impl Shader {
+    /// Leaves the container in the session's folder for a failure to be
+    /// tried again without the title (`SPARK_OFFLINE=1`; nothing unless
+    /// set). `pipeline`: all the shaders of a refused pipeline.
+    pub(crate) fn record_offline(&self, kind: &str, error: &str, pipeline: &str) {
+        use victory_core::session::offline;
+        if offline::on() {
+            offline::record(&offline::Failure {
+                kind,
+                hash: &self.hash,
+                stage: self.stage,
+                container: &self.container,
+                error,
+                pipeline,
+            });
+        }
     }
 }
 

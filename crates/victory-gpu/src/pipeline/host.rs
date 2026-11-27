@@ -610,6 +610,18 @@ impl MeshState {
     }
 }
 
+/// Leaves the shaders of a pipeline the host refused for `error` in the
+/// session's folder (`SPARK_OFFLINE=1`; nothing unless set).
+fn refused_offline(shaders: &[Arc<Shader>], error: &dyn std::fmt::Display) {
+    if !victory_core::session::offline::on() {
+        return;
+    }
+    let (pipeline, error) = (format!("{shaders:?}"), error.to_string());
+    for shader in shaders {
+        shader.record_offline("refused", &error, &pipeline);
+    }
+}
+
 /// Logs a pipeline that gets no host pipeline, once per reason.
 fn refuse(reason: &'static str, shaders: &[Arc<Shader>]) -> Option<HostPipeline> {
     static SEEN: std::sync::Mutex<Vec<&str>> = std::sync::Mutex::new(Vec::new());
@@ -820,6 +832,7 @@ impl HostPipeline {
             Ok(root) => root,
             Err(e) => {
                 tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host root signature refused");
+                refused_offline(shaders, &e);
                 return None;
             }
         };
@@ -863,6 +876,7 @@ impl HostPipeline {
                         ?shaders,
                         "host pipeline refused"
                     );
+                    refused_offline(shaders, &e);
                     host.log_messages();
                     return None;
                 }
@@ -948,6 +962,7 @@ impl HostPipeline {
             };
             let refused = |e: windows::core::Error| {
                 tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host mesh pipeline refused");
+                refused_offline(shaders, &e);
                 host.log_messages();
             };
             let (pso, launch) = match launch_roots {
@@ -1100,6 +1115,7 @@ impl HostPipeline {
             Ok(pso) => pso,
             Err(e) => {
                 tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host pipeline refused");
+                refused_offline(shaders, &e);
                 host.log_messages();
                 return None;
             }
