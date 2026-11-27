@@ -68,6 +68,49 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    com uma correção que funciona já ajuda quem usa o projeto: entregue assim que estiver provado, sem esperar juntar
    um pacote. Um PR por mudança lógica, fácil de revisar; vários ganhos independentes viram vários PRs pequenos.
 
+## Título e builds na mesma máquina: a fila e a carona
+
+Rodar o título e compilar disputam a mesma máquina, e uma fila só (um trabalho por vez) deixa os builds horas
+esperando atrás das execuções. O motor traz uma fila com **dois recursos** (`scripts/motor/fila.py`):
+
+- a **placa**: uma execução do título por vez;
+- a **CPU**: um build por vez.
+
+Uma execução **exclusiva** (números absolutos, comparação entre execuções; o padrão) segura as duas: nada roda
+junto. Uma execução **intercalada** (A/B dentro da execução: `SPARK_AB` ou `SPARK_PLAN`) segura só a placa: um
+build pode rodar ao mesmo tempo, porque os braços alternam a cada bloco e sentem a mesma carga; o build então roda
+com prioridade baixa e metade dos núcleos. Um build não começa durante uma execução exclusiva, nem quando uma
+espera há mais de 20 min; entre builds, o mais curto primeiro (pela mediana do histórico).
+
+```text
+python scripts/motor.py fila status
+python scripts/motor.py fila rodar build-1 -- cargo build --profile diag -p victory --features diagnostics
+python scripts/motor.py fila rodar <nome> --classe jogo --modo intercalada -- <comando que roda o título>
+```
+
+`autopilot.py rodar` entra nessa fila sozinho: `intercalada` com `SPARK_AB`/`SPARK_PLAN`, senão `exclusiva`
+(`SPARK_FILA_MODO` força um modo). Compile sempre por `motor.py fila rodar`, para a fila saber do build. A pasta da
+fila é `SPARK_FILA_DIR`, senão `fila/` dentro de `SPARK_LOG_DIR` (ou da pasta padrão das execuções): fora do
+repositório. Todos os agentes e terminais da máquina precisam apontar para a mesma.
+
+No fim da execução fica em `<pasta da execução>/concorrencia.json` o modo e os segundos de build que rodaram junto
+(`{"modo", "build_s"}`). O motor lê esse arquivo: uma execução exclusiva com build ao lado é
+`PROBLEMA_DE_MEDICAO`; uma intercalada mantém o veredito do seu A/B e só alerta; e `motor.py comparar` recusa
+qualquer execução com carga, porque o número absoluto dela mudou.
+
+**Carona.** Vários agentes (ou pessoas) com perguntas de A/B sobre o mesmo executável não precisam de uma execução
+cada um. Cada um escreve o seu plano (`SPARK_PLAN`, como em [logs.md](logs.md)) e
+
+```text
+python scripts/motor.py plano --juntar <plano-a.toml> <plano-b.toml> ... --saida <SPARK_LOG_DIR>/carona.toml
+```
+
+junta todos os experimentos em fatoriais de até 5 fatores: uma execução responde a todos. A saída diz em que
+experimento (`--exp N`) e em que fator ficou a pergunta de cada pedido; uma chave pedida duas vezes entra uma vez,
+e dois pedidos que mexem na mesma chave de modos diferentes ficam em experimentos separados. Só valem chaves que
+alternam dentro da execução (as da tabela `crates/victory-gpu/src/switches.rs`); mudanças que pedem outro
+executável continuam pedindo a sua execução.
+
 ## Atualizar o README (só avanços muito relevantes)
 
 O AutoPilot atualiza a seção "Onde estamos" e a tabela "Desempenho medido" do README **no mesmo PR** da mudança,

@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import math
+import os
 import re
 import sys
 import tempfile
@@ -12,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import amostras  # noqa: E402
-from motor import conhecimento, estat, medicao, offline, plano, problemas, relatorio, veredito  # noqa: E402
+from motor import conhecimento, estat, fila, medicao, offline, plano, problemas, relatorio, veredito  # noqa: E402
 from motor.cli import main as _main  # noqa: E402
 from motor.sessao import RAIZ, Sessao, dentro_do_repo  # noqa: E402
 
@@ -552,6 +553,118 @@ class Parada(ComSessao):
         self.assertEqual(p.exp, 1)
         self.assertEqual(p.controle.read_text(encoding="utf-8"), "1")
         self.assertEqual(p.resultados[0]["estado"], "DECIDIDO")
+
+
+class Carona(unittest.TestCase):
+    def test_pedidos_de_varios_planos_viram_um_fatorial(self):
+        a = {"origem": "a", "periodo_s": 20, "experimento": [{"nome": "x", "ab": "VICTORY_A"},
+                                                             {"nome": "y", "ab": "VICTORY_B=80/94*VICTORY_C"}]}
+        b = {"origem": "b", "periodo_s": 30, "experimento": [{"nome": "z", "ab": "VICTORY_C:30"},
+                                                             {"nome": "w", "ab": "VICTORY_D+VICTORY_E"}]}
+        j = plano.juntar([a, b])
+        self.assertEqual([e["ab"] for e in j["experimentos"]], ["VICTORY_A*VICTORY_B=80/94*VICTORY_C*VICTORY_D+VICTORY_E"])
+        self.assertEqual(j["periodo_s"], 30)
+        # A chave pedida pelos dois entra uma vez, e cada pedido sabe onde ler a sua resposta.
+        self.assertEqual([(o["origem"], o["exp"], o["posicao"]) for o in j["onde"]],
+                         [("a", 0, 0), ("a", 0, 1), ("a", 0, 2), ("b", 0, 2), ("b", 0, 3)])
+        self.assertEqual(j["conflitos"], [])
+        texto = plano.toml(j)
+        self.assertIn('ab = "VICTORY_A*VICTORY_B=80/94*VICTORY_C*VICTORY_D+VICTORY_E"', texto)
+        self.assertIn("b / z: `VICTORY_C` → `motor.py ab <pasta> --exp 0`, fator 3", plano.md_da_carona(j))
+
+    def test_mais_de_cinco_fatores_e_chaves_em_conflito_abrem_outro_experimento(self):
+        muitos = {"origem": "m", "experimento": [{"nome": "n", "ab": "*".join(f"VICTORY_K{i}" for i in range(7))}]}
+        j = plano.juntar([muitos])
+        self.assertEqual([e["fatores"] for e in j["experimentos"]], [5, 2])
+        outro = {"origem": "o", "experimento": [{"nome": "v", "ab": "VICTORY_K0=0/0"}]}
+        j = plano.juntar([muitos, outro])
+        self.assertEqual(j["conflitos"][0]["chaves"], ["VICTORY_K0"])
+        primeiro, aa = j["onde"][0], j["onde"][-1]
+        self.assertNotEqual(primeiro["exp"], aa["exp"])
+        for e in j["experimentos"]:
+            nomes = [n for f in e["ab"].split("*") for n in plano._chaves_do_fator(f)]
+            self.assertEqual(len(nomes), len(set(nomes)))
+
+    def test_comando_junta_arquivos_e_so_grava_com_saida(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for nome, ab in (("um", "VICTORY_A"), ("dois", "VICTORY_B")):
+                (Path(tmp) / f"{nome}.toml").write_text(f'periodo_s = 20\n[[experimento]]\nnome = "{nome}"\nab = "{ab}"\n',
+                                                        encoding="utf-8")
+            arquivos = [str(Path(tmp) / "um.toml"), str(Path(tmp) / "dois.toml")]
+            self.assertEqual(main(["plano", "--juntar", *arquivos]), 0)
+            self.assertEqual(len(list(Path(tmp).iterdir())), 2)
+            saida = Path(tmp) / "carona.toml"
+            self.assertEqual(main(["plano", "--juntar", *arquivos, "--saida", str(saida)]), 0)
+            self.assertIn('ab = "VICTORY_A*VICTORY_B"', saida.read_text(encoding="utf-8"))
+
+
+class FilaDaMaquina(unittest.TestCase):
+    def bilhete(self, ident: str, classe: str, hora: float, modo: str = "exclusiva", nome: str | None = None) -> dict:
+        return {"id": ident, "nome": nome or ident, "classe": classe, "modo": modo, "pid": 1, "hora": hora}
+
+    def test_build_roda_junto_de_execucao_intercalada_e_nunca_de_exclusiva(self):
+        build = self.bilhete("b", "pesado", 100)
+        livre = fila.pode_comecar(build, [build], None, None, 200)
+        com_ab = fila.pode_comecar(build, [build], {"modo": "intercalada"}, None, 200)
+        com_absoluta = fila.pode_comecar(build, [build], {"modo": "exclusiva"}, None, 200)
+        self.assertEqual((livre, com_ab, com_absoluta), (True, True, False))
+        # Uma execução exclusiva espera o build acabar; a intercalada só espera a placa.
+        exclusiva = self.bilhete("e", "jogo", 100)
+        intercalada = self.bilhete("i", "jogo", 100, "intercalada")
+        cpu = {"modo": "exclusiva", "classe": "pesado"}
+        self.assertFalse(fila.pode_comecar(exclusiva, [exclusiva], None, cpu, 200))
+        self.assertTrue(fila.pode_comecar(intercalada, [intercalada], None, cpu, 200))
+        self.assertFalse(fila.pode_comecar(intercalada, [intercalada], {"modo": "intercalada"}, None, 200))
+        # Com uma execução exclusiva esperando há muito, nenhum build novo começa.
+        velha = self.bilhete("e", "jogo", 0)
+        self.assertFalse(fila.pode_comecar(build, [velha, build], {"modo": "intercalada"}, None,
+                                           fila.ENVELHECE_S + 1))
+
+    def test_ordem_execucoes_antes_e_build_mais_curto_primeiro(self):
+        historico = [{"nome": "longo-1", "classe": "pesado", "duracao_s": 600},
+                     {"nome": "curto-7", "classe": "pesado", "duracao_s": 30}]
+        fila_ = [self.bilhete("1", "pesado", 10, nome="longo-2"), self.bilhete("2", "pesado", 20, nome="curto-8"),
+                 self.bilhete("3", "jogo", 30), self.bilhete("4", "pesado", 40, nome="novo")]
+        self.assertEqual([b["id"] for b in fila.ordem(fila_, 50, historico)], ["3", "2", "4", "1"])
+        # Quem espera há mais do que o limite passa à frente dos mais curtos.
+        self.assertEqual([b["id"] for b in fila.ordem(fila_, 15 + fila.ENVELHECE_S, historico)][:2], ["3", "1"])
+        self.assertEqual(fila.estimativa("curto-9", "pesado", historico), 30.0)
+        self.assertEqual(fila.sobreposicao([{"inicio": 10, "fim": 30}, {"inicio": 50, "fim": 60}], 20, 55), 15)
+
+    def test_vez_segura_as_travas_e_a_execucao_registra_a_carga(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = fila.Fila(Path(tmp) / "fila")
+            with contextlib.redirect_stdout(io.StringIO()):
+                with f.vez("execucao", "jogo", "exclusiva") as vez:
+                    self.assertTrue(f.placa.exists() and f.cpu.exists())
+                    self.assertEqual(f.dono(f.placa)["nome"], "execucao")
+                    inicio = vez["inicio"]
+                self.assertFalse(f.placa.exists() or f.cpu.exists())
+                with f.vez("execucao-ab", "jogo", "intercalada"):
+                    self.assertTrue(f.placa.exists() and not f.cpu.exists())
+                    with f.vez("build", "pesado"):
+                        self.assertEqual(f.dono(f.cpu)["classe"], "pesado")
+            # Uma trava de processo morto não prende ninguém.
+            f.placa.write_text(json.dumps({"nome": "morto", "pid": 0}), encoding="utf-8")
+            os.utime(f.placa, (1, 1))
+            self.assertIsNone(f.dono(f.placa))
+            with open(f.builds, "a", encoding="utf-8") as b:
+                b.write(json.dumps({"nome": "build", "inicio": inicio + 10, "fim": inicio + 50}) + "\n")
+            logs = Path(tmp) / "execucao"
+            logs.mkdir()
+            self.assertEqual(f.gravar_concorrencia(logs, "exclusiva", inicio, inicio + 100)["build_s"] >= 40, True)
+            self.assertEqual(json.loads((logs / "concorrencia.json").read_text(encoding="utf-8"))["modo"], "exclusiva")
+            self.assertIn("feito: build", f.status())
+
+    def test_modo_e_pasta_vem_do_ambiente(self):
+        self.assertEqual(fila.modo_da_execucao({}), "exclusiva")
+        self.assertEqual(fila.modo_da_execucao({"SPARK_AB": "VICTORY_A"}), "intercalada")
+        self.assertEqual(fila.modo_da_execucao({"SPARK_PLAN": "p.toml", "SPARK_FILA_MODO": "exclusiva"}), "exclusiva")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(fila.pasta_da_fila({"SPARK_LOG_DIR": tmp}), Path(tmp) / "fila")
+            self.assertEqual(fila.pasta_da_fila({"SPARK_FILA_DIR": tmp, "SPARK_LOG_DIR": "x"}), Path(tmp))
+        with self.assertRaises(SystemExit):
+            fila.pasta_da_fila({"SPARK_FILA_DIR": str(RAIZ / "scripts")})
 
 
 class Conhecimento(unittest.TestCase):

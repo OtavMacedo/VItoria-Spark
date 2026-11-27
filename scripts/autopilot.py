@@ -27,7 +27,9 @@ Uso:
 - A janela fica fora da tela (`VICTORY_HIDDEN_WINDOW=1`) e as sessões de áudio do processo são silenciadas (precisa
   de `pip install pycaw`). No Linux o título roda sob o Wine por `scripts/linux/spark.sh`, com o prefixo sem driver
   de áudio durante a execução (docs/linux.md).
-- Só aperta A (Enter) para passar das telas iniciais. Uma execução por vez (trava na pasta de logs).
+- Só aperta A (Enter) para passar das telas iniciais. Uma execução por vez, pela fila do motor
+  (`python scripts/motor.py fila status`): com `SPARK_AB`/`SPARK_PLAN` a execução é `intercalada` e um build
+  enfileirado (`motor.py fila rodar <nome> -- cargo build ...`) pode rodar junto; senão é `exclusiva`.
 """
 
 import os
@@ -40,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from amostras import Parada  # noqa: E402
+from motor.fila import Fila, modo_da_execucao, pasta_da_fila  # noqa: E402
 from motor.sessao import dentro_do_repo  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -209,14 +212,12 @@ def rodar(args: list[str]) -> int:
         SPARK_PHASES="1",
     )
     env.update(extra)
-    trava = BASE / ".autopilot.lock"
-    while True:
-        try:
-            with open(trava, "x") as t:
-                t.write(nome + "\n")
-            break
-        except FileExistsError:
-            time.sleep(15)
+    # A fila do motor: uma execução do título por vez; com A/B dentro da execução (intercalada) um build pode
+    # rodar junto, senão a execução espera a máquina livre e a segura inteira.
+    fila = Fila(pasta_da_fila({**os.environ, "SPARK_LOG_DIR": str(BASE)}))
+    modo = modo_da_execucao(env)
+    vez = fila.vez(nome, "jogo", modo)
+    comeco = vez.__enter__()["inicio"]
     try:
         with open(pasta / "saida.log", "wb") as saida:
             p = subprocess.Popen(
@@ -242,7 +243,10 @@ def rodar(args: list[str]) -> int:
                 except subprocess.TimeoutExpired:
                     pass
     finally:
-        trava.unlink(missing_ok=True)
+        carga = fila.gravar_concorrencia(pasta, modo, comeco)
+        vez.__exit__(None, None, None)
+    if carga["build_s"]:
+        print(f"{nome}: execução {modo} com {carga['build_s']} s de build ao mesmo tempo")
     resumos = sorted(pasta.rglob("resumo.md"))
     print(f"{nome}: {fim} após {time.time() - inicio:.0f} s, código {p.returncode}")
     print(parada.estado())

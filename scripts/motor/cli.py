@@ -8,6 +8,13 @@ Uso:
   python scripts/motor.py plano <sessão> [--periodo 20] [--gravar]
       Só o plano: o `SPARK_PLAN` que testa de uma vez todas as chaves candidatas (fatorial), as chaves que pedem
       execução própria e os itens verificáveis sem o título. Com `--gravar`: `plano.toml` e `plano.md`.
+  python scripts/motor.py plano --juntar <plano.toml> [...] [--saida <plano.toml>] [--periodo N]
+      Carona: junta os experimentos de vários planos (de várias pessoas ou agentes, no mesmo executável) em
+      fatoriais de até 5 fatores, para uma execução responder a todos; diz em que `--exp` e fator ficou cada um.
+  python scripts/motor.py fila status | fila rodar <nome> [--classe pesado|jogo] [--modo exclusiva|intercalada]
+                                                          -- <comando...>
+      A fila da máquina (placa e CPU): builds rodam junto de execuções com A/B dentro delas, nunca junto das
+      que medem números absolutos (`motor/fila.py`).
   python scripts/motor.py ab <sessão> [--exp N] [--imagem <json>] [--ruido <ruido.json>] [--gravar]
                                       [--registrar <decisoes.jsonl> [--chave <NOME>] [--sha <commit>]]
       O veredito do A/B de uma execução (`SPARK_AB`; N de `SPARK_PLAN`). Num fatorial, um veredito por fator.
@@ -31,9 +38,10 @@ como estava. O que `--gravar` grava fica na pasta da sessão, nunca dentro do re
 import json
 import sys
 import time
+import tomllib
 from pathlib import Path
 
-from . import estat, offline, plano, problemas, relatorio, veredito
+from . import estat, fila, offline, plano, problemas, relatorio, veredito
 from .sessao import Sessao, dentro_do_repo
 
 
@@ -103,7 +111,28 @@ def diagnosticar(args: list[str]) -> int:
     return 0
 
 
+def juntar(args: list[str]) -> int:
+    """`plano --juntar <plano.toml> [...] [--saida <plano.toml>] [--periodo N]`."""
+    periodo = _opcao(args, "--periodo")
+    saida = _opcao(args, "--saida")
+    if not args:
+        sys.exit(__doc__)
+    pedidos = [{"origem": Path(a).stem, **tomllib.loads(Path(a).read_text(encoding="utf-8-sig"))} for a in args]
+    junto = plano.juntar(pedidos, int(periodo) if periodo else None)
+    texto = plano.toml(junto)
+    print(plano.md_da_carona(junto), end="")
+    if saida:
+        _fora_do_repo(saida)
+        Path(saida).write_text(texto, encoding="utf-8")
+        print(f"\nRodar: `python scripts/autopilot.py rodar carona-1 SPARK_PLAN={saida}`")
+    else:
+        print("\nO plano (`--saida <arquivo>` o grava):\n\n" + texto, end="")
+    return 0
+
+
 def planejar(args: list[str]) -> int:
+    if _opcao(args, "--juntar", valor=False):
+        return juntar(args)
     periodo = int(_opcao(args, "--periodo") or 20)
     gravar = bool(_opcao(args, "--gravar", valor=False))
     if not args:
@@ -206,7 +235,7 @@ def consultar(args: list[str]) -> int:
     return 0
 
 
-COMANDOS = {"diagnosticar": diagnosticar, "plano": planejar, "ab": ab, "comparar": comparar,
+COMANDOS = {"fila": fila.comando, "diagnosticar": diagnosticar, "plano": planejar, "ab": ab, "comparar": comparar,
             "reproduzir": reproduzir, "ruido": ruido, "consultar": consultar}
 
 

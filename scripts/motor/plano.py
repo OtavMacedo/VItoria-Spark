@@ -51,6 +51,80 @@ def montar(diagnostico: dict, periodo_s: int = 20) -> dict:
     }
 
 
+def _chaves_do_fator(fator: str) -> dict[str, str]:
+    """As chaves de um fator (`A+B=80/94`) com os seus dois valores (`0/1` sem valor escrito)."""
+    out = {}
+    for parte in fator.replace(",", "+").split("+"):
+        nome, _, valores = parte.strip().partition("=")
+        out[nome.strip()] = valores.strip() or "0/1"
+    return out
+
+
+def juntar(pedidos: list[dict], periodo_s: int | None = None) -> dict:
+    """Carona: junta os experimentos de vários planos (`{"origem", "periodo_s", "experimento": [{"nome", "ab"}]}`,
+    como um `SPARK_PLAN` lido) em experimentos fatoriais de até `FATORES_MAX` fatores, para que uma execução
+    responda às perguntas de todos.
+
+    Um fator pedido duas vezes entra uma vez. Dois fatores que mexem na mesma chave de modos diferentes (outros
+    valores, ou junto de outras chaves) não cabem no mesmo experimento: ficam em experimentos separados e saem em
+    `conflitos`. `onde` diz, para cada fator pedido, o experimento e a posição em que ele ficou (o `--exp` e a
+    linha do veredito a ler). O período é o maior dos pedidos, se `periodo_s` não é dado.
+    """
+    fatores: list[dict] = []
+    onde, conflitos = [], []
+    for pedido in pedidos:
+        for exp in pedido.get("experimento") or []:
+            for texto in exp["ab"].split(":")[0].split("*"):
+                chaves = _chaves_do_fator(texto)
+                igual = next((f for f in fatores if f["chaves"] == chaves), None)
+                if igual is None:
+                    igual = {"chaves": chaves,
+                             "ab": "+".join(n if v == "0/1" else f"{n}={v}" for n, v in chaves.items())}
+                    for outro in fatores:
+                        if set(outro["chaves"]) & set(chaves):
+                            conflitos.append({"chaves": sorted(set(outro["chaves"]) & set(chaves)),
+                                              "fatores": [outro["ab"], igual["ab"]]})
+                    fatores.append(igual)
+                onde.append({"origem": pedido.get("origem", ""), "experimento": exp.get("nome", ""), "fator": igual})
+    experimentos: list[list[dict]] = []
+    for f in fatores:
+        cabe = next((e for e in experimentos if len(e) < K.FATORES_MAX
+                     and not any(set(o["chaves"]) & set(f["chaves"]) for o in e)), None)
+        if cabe is None:
+            cabe = []
+            experimentos.append(cabe)
+        cabe.append(f)
+    for i, e in enumerate(experimentos):
+        for j, f in enumerate(e):
+            f["exp"], f["posicao"] = i, j
+    periodo = periodo_s or max([int(p.get("periodo_s", 20)) for p in pedidos] or [20])
+    return {
+        "periodo_s": periodo,
+        "experimentos": [{"nome": f"carona-{i + 1}", "ab": "*".join(f["ab"] for f in e), "fatores": len(e),
+                          "teto_s": teto_s(len(e))} for i, e in enumerate(experimentos)],
+        "onde": [{"origem": o["origem"], "experimento": o["experimento"], "fator": o["fator"]["ab"],
+                  "exp": o["fator"]["exp"], "posicao": o["fator"]["posicao"]} for o in onde],
+        "conflitos": conflitos,
+        "duracao_max_s": sum(teto_s(len(e)) + periodo for e in experimentos),
+    }
+
+
+def md_da_carona(junto: dict) -> str:
+    """A carona para ler: os experimentos e onde ficou a pergunta de cada pedido."""
+    linhas = [f"# Carona: {len(junto['onde'])} pergunta(s) em {len(junto['experimentos'])} experimento(s) de uma "
+              f"execução (até {junto['duracao_max_s'] / 60:.0f} min de cena estável)", ""]
+    for i, e in enumerate(junto["experimentos"]):
+        linhas.append(f"- `--exp {i}` `{e['nome']}`: `{e['ab']}`")
+    linhas.append("")
+    for o in junto["onde"]:
+        linhas.append(f"- {o['origem']} / {o['experimento']}: `{o['fator']}` → `motor.py ab <pasta> --exp {o['exp']}`, "
+                      f"fator {o['posicao'] + 1}")
+    for c in junto["conflitos"]:
+        linhas.append(f"- conflito em {', '.join(c['chaves'])}: `{c['fatores'][0]}` e `{c['fatores'][1]}` ficam em "
+                      "experimentos separados")
+    return "\n".join(linhas) + "\n"
+
+
 def toml(plano: dict) -> str:
     """O arquivo de `SPARK_PLAN` do plano (vazio sem experimentos)."""
     if not plano["experimentos"]:

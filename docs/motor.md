@@ -12,6 +12,8 @@ python scripts/motor.py comparar --a <sessões> --b <sessões>   # veredito entr
 python scripts/motor.py reproduzir <sessão>       # sem o título: retraduz e cria as pipelines das falhas guardadas
 python scripts/motor.py ruido <sessão A/A> --gravar <ruido.json>
 python scripts/motor.py consultar <decisoes.jsonl> [<CHAVE>]
+python scripts/motor.py plano --juntar <planos...>   # carona: vários planos numa execução (autopilot.md)
+python scripts/motor.py fila status|rodar ...        # a fila da máquina: placa e CPU (autopilot.md)
 ```
 
 `<sessão>` é a pasta de uma execução (vale o `resumo.json` mais novo dentro dela). **Ler não grava:** os comandos
@@ -150,6 +152,7 @@ dentro dele): nenhum contêiner é escrito e o log avisa.
 | `plano.py` | a próxima execução: plano fatorial, chaves de execução própria, itens offline |
 | `veredito.py` | os critérios de GANHO/REGRESSAO para A/B, fatorial e entre execuções |
 | `offline.py` | a verificação sem o título |
+| `fila.py` | a fila da máquina: execuções do título e builds, dois recursos |
 | `relatorio.py`, `cli.py` | o texto e os comandos |
 
 Testes (dados sintéticos): `python -m unittest discover -s scripts/tests`. Eles também conferem que todo arquivo e
