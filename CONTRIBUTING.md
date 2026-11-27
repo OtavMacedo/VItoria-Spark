@@ -45,6 +45,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked --exclude victory-gpu
 cargo test -p victory-gpu --locked -- --test-threads=1
 cargo xtask policy
+python -m unittest discover -s scripts/tests
 ```
 
 ## 5. Código e comentários

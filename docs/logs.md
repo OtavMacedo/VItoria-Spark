@@ -11,6 +11,9 @@ máquina e por assistentes de IA com contexto limitado.
 | `resumo.json` | Os mesmos números, em JSON (para scripts e comparações entre execuções). |
 | `eventos.jsonl` | Um objeto JSON por linha: a 1ª linha é a sessão, as demais são os eventos do log. |
 
+Quem lê tudo isso por você é o motor de diagnóstico ([motor.md](motor.md)): `python scripts/motor.py diagnosticar
+<pasta>` devolve todos os problemas da execução em ordem, com evidência e correção sugerida.
+
 `resumo.*` é reescrito a cada ~60 s e no fim (saída do título, `abort`,
 falha, perda do dispositivo), então mesmo um crash deixa um resumo.
 
@@ -44,10 +47,13 @@ Demais linhas:
 | `spark.kind` | Campos |
 |---|---|
 | `frame_rate` (a cada 5 s) | `spark.fps`, `spark.ms`, `spark.preparing_ms`, `spark.copies_ms`/`_mb`, `spark.textures_ms`/`_mb`, `spark.gpu_ms`, `spark.copy_back_ms`/`_mb`, `spark.draws`, `spark.dropped`, `spark.indirect`, `spark.making` |
+| `frame_phases` (a cada 5 s) | média por quadro de cada fase: `spark.preparing_ms`, `spark.copies_ms`, `spark.write_watch_ms`, `spark.textures_ms`, `spark.gpu_ms`, `spark.copy_back_ms`, `spark.present_ms`, `spark.remap_ms`, `spark.pipeline_wait_ms`, `spark.card_idle_ms`, `spark.disk_ms`, `spark.pace_ms`; e `spark.frames`, `spark.copies_mb`, `spark.copy_back_mb`, `spark.watch_calls`, `spark.watch_pages` |
+| `draws_dropped` (a cada 5 s, se houve) | por quadro, por causa: `spark.being_made`, `spark.untranslated`, `spark.refused`, `spark.no_pipeline`, `spark.builder_off`, `spark.unbound`, `spark.skipped`, `spark.other` |
 | `video_memory` | `spark.vram_used_mb`, `spark.vram_budget_mb`, `spark.shared_used_mb` |
-| `adapter` | `spark.name`, `spark.vendor`, `spark.driver`, `spark.vram_mb`, `spark.wave_max` |
-| `pipeline_refused` | `shaders`, `error` |
-| `shader_untranslated` | `hash`, `stage`, `error`, `spark.instruction` |
+| `adapter` | `spark.name`, `spark.vendor`, `spark.driver`, `spark.vram_mb`, `spark.wave_max`, `spark.create_ms` (do pedido do título ao dispositivo pronto) |
+| `driver_cache` (uma vez) | `spark.mb`, `spark.files`: o cache de shaders do driver no início |
+| `pipeline_refused` | `shaders`, `error`, `cause` |
+| `shader_untranslated` | `hash` (16 dígitos do BLAKE3 do contêiner), `stage`, `error`, `spark.instruction`, `spark.bytes` |
 | `device_lost` | `spark.reason` |
 
 Falhas (exceção não tratada, panic, falha da GPU) aparecem como target
@@ -58,7 +64,10 @@ thread própria (`spark-log`) através de uma fila limitada; com a fila cheia o
 evento é descartado e contado (`events_dropped` no resumo), nunca esperado.
 Um mesmo ponto do código que emite mais de 30 eventos em 10 s tem o excesso
 contado e resumido numa linha `repeated events counted instead of written`.
-Não há eventos por draw; por quadro há só uma soma em memória.
+Não há eventos por draw; por quadro há só somas em memória: o comprimento do quadro e, para as fases, 16 leituras
+de contadores atômicos e uma dúzia de somas sob a mesma trava (menos de 1 µs por quadro no teste
+`a_frame_costs_microseconds`; `SPARK_PHASES=0` desliga). O write watch ganha duas leituras de relógio por consulta
+ao sistema, que custa dezenas de microssegundos.
 
 ### Variáveis
 
@@ -70,7 +79,9 @@ Não há eventos por draw; por quadro há só uma soma em memória.
 | `SPARK_GIT_HASH=<hash>` | (na compilação) o commit que a 1ª linha informa |
 | `SPARK_STABLE_DRAWS=<n>` | desenhos por quadro a partir dos quais a cena é a estável (padrão 4500) |
 | `SPARK_STABLE_AFTER_S=<s>` | segundos depois do 1º quadro do mundo antes da cena estável (padrão 60) |
-| `SPARK_AB=CHAVE[=a/b][+CHAVE2...][:s]` | A/B dentro da execução (ver abaixo) |
+| `SPARK_AB=CHAVE[=a/b][+CHAVE2...][*CHAVE3...][:s]` | A/B dentro da execução; `*` separa fatores de um fatorial (ver abaixo) |
+| `SPARK_PHASES=0` | não mede as fases por quadro (padrão: mede) |
+| `SPARK_OFFLINE=1` | guarda em `offline/` os contêineres dos shaders que não traduzem e das pipelines recusadas, para `motor.py reproduzir` (padrão: não guarda) |
 | `SPARK_PLAN=<plano.toml>` | vários A/B em sequência na mesma execução (ver abaixo) |
 
 `VICTORY_LOG` continua filtrando só o console.
@@ -88,6 +99,23 @@ Não há eventos por draw; por quadro há só uma soma em memória.
   de preparando, cópias, texturas, GPU, cópia de volta, draws e descartados;
   e as mesmas medianas de **todas** as janelas de 1 s da cena estável (5 vezes
   mais amostras que as linhas de 5 s).
+- **Descartados por causa** (`dropped_by_cause`): por quadro, quantos desenhos não rodaram por pipeline sendo
+  feita, shader que não traduz, pipeline recusada, falta de pipeline, recursos não ligados; e, à parte
+  (`on_purpose`), o que os ajustes deixam de fora de propósito (o construtor de estruturas de ray tracing desligado,
+  uma chave de diagnóstico). Só os primeiros são falha.
+- **Fases do quadro** (`phases`, `phases_world`): por fase, média, p50, p95, p99 e máximo em ms por quadro, e a
+  parte do quadro, medidos em **cada quadro** do mundo (a cena estável, quando há). As fases: `preparing`
+  (preparo das submissões), dentro dele `copies` e `write_watch`, `textures` (todas as threads), `gpu` (espera pela
+  placa), `copy_back`, `present` (a chamada de apresentação do título), `remap` (o runtime trocando o que a memória
+  do título mostra), `pipeline_wait`, `card_idle`, `disk` e `pace`. Elas se sobrepõem e não somam o quadro. Junto:
+  MB por quadro e MB/s das cópias e da cópia de volta, consultas ao write watch por quadro, páginas e µs por
+  consulta.
+- **Quadros de mais de 1 s por causa** (`long_frame_causes`): cada quadro longo vai para a maior entre preparo,
+  placa, cópia de volta, remapeamento e espera por pipelines, se ela passa de 25 % do quadro; senão para
+  `page_faults` (o amostrador viu mais de 5.000 falhas de página/s) ou `unexplained`.
+- **Shaders que não traduzem** (`untranslated_shaders`): até 64, com `hash`, `stage` e a instrução.
+- **Medição** (`measurement`): `device_create_ms`, `driver_cache_mb`, `driver_cache_files`; e, na cena estável,
+  `windows_making_pipelines` (janelas com pipelines ainda sendo feitas: caches frios).
 - **A/B na rodada** (só com `SPARK_AB`): ver abaixo.
 - **Pipelines recusadas** e **Instruções não traduzidas**: top 10 com
   contagem (por lista de shaders / por instrução, com nº de shaders).
@@ -95,7 +123,7 @@ Não há eventos por draw; por quadro há só uma soma em memória.
 - **Memória**: RAM livre mínima, falhas de página/s, VRAM (uso máximo,
   orçamento mínimo, compartilhada).
 - **Avisos e erros**: top 10 deduplicados (números trocados por `#`).
-- **Próximo alvo**: regras simples sobre os números acima, em ordem:
+- **Próximo alvo**: regras simples sobre os números acima (o diagnóstico completo é o do motor), em ordem:
   falha → dispositivo perdido → não chegou ao mundo → draws descartados
   (com a instrução que mais falta) → memória (quadros > 1 s com muitas
   falhas de página ou pouca RAM) → engasgos → VRAM no limite → placa vs.
@@ -130,8 +158,18 @@ opção dos dois jeitos, em blocos alternados da mesma cena:
   inteiras num braço; e o veredito pela diferença pareada das medianas de
   blocos vizinhos (um de cada braço), com intervalo de confiança de 95 %
   (t de Student). `resumo.json` traz o mesmo em `ab`, mais os números de cada bloco (`block_stats`: índice, braço,
-  quadros, p50, p95, média, quadros > 1 s), que é o que `scripts/ab_estat.py` e `scripts/veredito.py` analisam
+  quadros, p50, p95, média, quadros > 1 s), que é o que o motor (`scripts/motor.py ab`) analisa
   (escala log, tendência linear, parada sequencial).
+
+### Várias chaves ao mesmo tempo (fatorial)
+
+`SPARK_AB=VICTORY_X*VICTORY_Y*VICTORY_Z` faz de cada lado do `*` um fator (até 5; `+` continua juntando chaves que
+mudam juntas). Cada bloco roda uma combinação dos níveis, de modo que todo bloco informa todos os fatores: três
+chaves são julgadas numa execução pouco mais longa que a de uma. O `ab` do `resumo.json` ganha `factors` (cada fator
+como `CHAVE=a/b`) e cada bloco de `block_stats` ganha `cell` (bit `f` = nível do fator `f`; `arm` continua sendo o
+nível do fator 0). As capturas viram `frame-N-c<célula>.png`. A seção "A/B na rodada" do `resumo.md` mostra só os
+dois níveis do 1º fator; o efeito de cada fator, com intervalo e interações, sai de `python scripts/motor.py ab
+<pasta>` ([motor.md](motor.md)).
 
 ### Vários experimentos numa execução (`SPARK_PLAN`)
 
@@ -150,13 +188,15 @@ ab = "VICTORY_STEP_INDEX=0/0"
 O experimento em vigor é o número escrito em `<plano.toml>.atual` (0 se o arquivo não existe), lido a cada segundo:
 quem acompanha a execução (`scripts/amostras.py`, usado por `scripts/autopilot.py rodar`) escreve o seguinte quando
 o atual decide. Cada experimento novo começa com um bloco de lavagem no braço A, fora das contas. O resumo traz um
-`ab` por experimento em `ab_experiments` e uma seção "A/B na rodada" para cada um; `scripts/veredito.py <pasta>
---exp N` julga o experimento N.
+`ab` por experimento em `ab_experiments` e uma seção "A/B na rodada" para cada um; `python scripts/motor.py ab
+<pasta> --exp N` julga o experimento N. Um experimento pode ser fatorial (`ab = "VICTORY_X*VICTORY_Y"`); o plano
+que `motor.py diagnosticar` grava (`plano.toml`) junta assim todas as chaves candidatas da execução.
 
 ## Fluxo recomendado com uma IA
 
 1. Rode o jogo e feche normalmente (ou deixe cair).
-2. Entregue **só o `resumo.md`** primeiro, com algo como:
+2. Rode `python scripts/motor.py diagnosticar <pasta>` e entregue o `diagnostico.md` (ou **só o `resumo.md`**),
+   com algo como:
 
    > Este é o resumo de uma execução do VItoria Spark (camada Xbox Series →
    > Windows/D3D12). Leia "Próximo alvo" e me diga o que investigar no

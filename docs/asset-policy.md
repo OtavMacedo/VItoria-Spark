@@ -38,6 +38,9 @@ Fora do repositório, configurados em `victory.toml`: `game_dir` (os seus arquiv
 derivado) e a pasta de logs (`SPARK_LOG_DIR`). As ferramentas se recusam a escrever saída derivada abaixo de uma
 pasta que contenha `.victory-root`.
 
+Com `SPARK_OFFLINE=1`, a pasta da sessão ganha `offline/`: os shaders do título que falharam, para serem
+verificados sem ele ([motor.md](motor.md)). São dados do jogo como quaisquer outros: ficam lá e nunca são publicados.
+
 ## Como é imposta
 
 1. `.gitignore` mantém os tipos comuns de dados fora do `git status`.

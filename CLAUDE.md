@@ -44,8 +44,9 @@ do título roda no processo; nós fornecemos carregador (`victory-loader`, `vict
 - Imagem: na primeira rodada depois de mudar o tradutor, as pipelines são compiladas durante o jogo e desenhos são
   descartados. Não julgue a imagem nessa rodada.
 - Antes de concluir: `cargo fmt`, `cargo clippy ... -D warnings`, testes do crate tocado e `cargo xtask policy`.
-- Para analisar uma execução, comece pelo `resumo.md` (seção "Próximo alvo") e só depois filtre o `eventos.jsonl` pelo
-  `target` que interessa. Não carregue o log inteiro no contexto.
+- Para analisar uma execução, rode `python scripts/motor.py diagnosticar <pasta>` ([docs/motor.md](docs/motor.md)) e
+  leia o `diagnostico.md`: todos os problemas em ordem, com evidência e correção sugerida. Só depois filtre o
+  `eventos.jsonl` pelo `target` que interessa. Não carregue o log inteiro no contexto.
 
 ## AutoPilot Mode
 
@@ -61,8 +62,14 @@ abrir ou comentar a issue, implementar, provar com A/B e entregar o PR. Pontos e
   processos que não iniciou.
 - Mudou o tradutor ou uma opção dele? Rode `python scripts/autopilot.py aquecer [CHAVE=valor ...]` antes de medir:
   é bem mais rápido traduzir antes, em todos os núcleos, do que durante o jogo.
-- Leia o `resumo.md` primeiro. Em issues e PRs vão só números agregados. Nunca cole log, nome de conteúdo, caminho ou
-  captura.
+- Leia o `diagnostico.md` do motor primeiro (`python scripts/motor.py diagnosticar <pasta>`; `rodar` já o gera). Se o
+  estado for `PROBLEMA_DE_MEDICAO`, não conclua nada: siga a ação indicada e meça de novo. Em issues e PRs vão só
+  números agregados. Nunca cole log, nome de conteúdo, caminho ou captura.
+- **Uma execução, vários problemas.** Trabalhe a lista do diagnóstico de cima para baixo sem rodar o título para cada
+  item: as chaves candidatas vão todas no `plano.toml` (A/B fatorial, um veredito por chave com `motor.py ab`), e as
+  correções do tradutor se conferem com `python scripts/motor.py reproduzir <pasta>`, sem o título. O título roda de
+  novo só para o plano e, no fim do lote, para confirmar.
+- O veredito de desempenho é o do motor (`motor.py ab` ou `motor.py comparar`); nunca declare ganho por conta própria.
 - Antes de abrir uma issue ou um PR, procure duplicatas (`gh issue list --label autopilot`, `gh pr list`). No máximo
   3 issues e 3 PRs por sessão. Use os modelos em `.github/`.
 - Nunca baixe, procure ou indique arquivos de jogo, chaves, firmware ou SDKs. Nunca escreva código que quebre

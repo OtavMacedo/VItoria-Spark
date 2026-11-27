@@ -24,7 +24,11 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    execução roda escondida e sem som, mede só a cena estável e para sozinha quando a mediana do quadro já está
    medida com ±3 % (intervalo de 95 %), com 60 amostras da cena estável ou no tempo limite, e gera o `resumo.md` fora
    do repositório.
-3. **Escolher o alvo:** a seção "Próximo alvo" do `resumo.md` diz onde está o gargalo. O agente procura uma issue
+3. **Escolher o alvo:** `python scripts/motor.py diagnosticar <pasta da execução>` ([motor.md](motor.md)) lista
+   **todos** os problemas da execução em ordem de custo, cada um com evidência, correção sugerida, chaves a testar
+   e arquivos; `rodar` já o chama no fim e deixa `diagnostico.md` na pasta. Se o estado for `PROBLEMA_DE_MEDICAO`,
+   siga a ação indicada e meça de novo antes de qualquer conclusão. Uma execução rende vários alvos: trabalhe a
+   lista de cima para baixo sem rodar o título de novo para cada item. O agente procura uma issue
    aberta sobre o mesmo problema. Se existir, comenta nela com os números agregados; se não, abre uma issue nova
    (modelo `autopilot`) e se atribui a ela.
 4. **Implementar:** branch `autopilot/<assunto>`, uma mudança lógica por commit, testes de unidade, e opção nova
@@ -36,17 +40,25 @@ encontra o maior gargalo, abre uma issue, implementa, mede de novo e abre um PR 
    `python scripts/autopilot.py aquecer [CHAVE=valor ...]`: ele traduz em paralelo, antes do jogo, os shaders que as
    execuções anteriores usaram. Mesmo assim, as pipelines novas são compiladas na primeira execução, então não julgue a
    imagem nela.
-   O julgamento é sempre o de `python scripts/veredito.py <pasta da execução>` (A/B na execução) ou
-   `python scripts/veredito.py --a <execuções> --b <execuções>` (entre execuções): 20 linhas e um estado só
+   **Várias chaves, uma execução:** o `plano.toml` que o diagnóstico grava põe todas as chaves candidatas num
+   A/B fatorial (`ab = "VICTORY_X*VICTORY_Y*VICTORY_Z"`): `python scripts/autopilot.py rodar plano-1
+   SPARK_PLAN=<pasta>/plano.toml` julga todas de uma vez, com um veredito por chave e o aviso de interação.
+   **Correções do tradutor, nenhuma execução:** shaders que não traduzem e pipelines recusadas ficam guardados na
+   pasta da sessão (`SPARK_OFFLINE=1`, que `rodar` liga); `python scripts/motor.py reproduzir <pasta>` retraduz e
+   cria as pipelines na placa com o build atual e diz o que ficou `CORRIGIDO`. O título só roda de novo no fim do
+   lote, para confirmar.
+   O julgamento é sempre o de `python scripts/motor.py ab <pasta da execução>` (A/B na execução) ou
+   `python scripts/motor.py comparar --a <execuções> --b <execuções>` (entre execuções): 20 linhas e um estado só
    (GANHO, SEM_EFEITO, INCONCLUSIVO, REGRESSAO, PROBLEMA_DE_MEDICAO). GANHO exige o quadro 3 %+ mais curto com
    confiança e nenhuma piora em p95, quadros > 1 s, falhas ou imagem (ver o cabeçalho do script). Leia só o
    veredito; abra o log apenas com PROBLEMA_DE_MEDICAO. Antes de testar algo, veja se já foi decidido
-   (`python scripts/veredito.py --consultar <decisoes.jsonl> <CHAVE>`), e registre o resultado com `--registrar`.
+   (`python scripts/motor.py consultar <decisoes.jsonl> <CHAVE>`), e registre o resultado com `--registrar`.
    Um GANHO só vale depois de confirmado numa segunda execução independente.
    O piso de ruído da sua máquina sai de uma execução A/A (os dois braços iguais):
    `python scripts/autopilot.py rodar aa-1 SPARK_AB=VICTORY_STEP_INDEX=0/0` e depois
-   `python scripts/ab_estat.py <pasta> --gravar-ruido <SPARK_LOG_DIR>/ruido.json`; o veredito usa esse arquivo
-   (`--ruido`) para marcar execuções ruidosas demais.
+   `python scripts/motor.py ruido <pasta> --gravar <SPARK_LOG_DIR>/ruido.json`; o veredito usa esse arquivo
+   (`--ruido`) para marcar execuções ruidosas demais. (`scripts/veredito.py` e `scripts/ab_estat.py` continuam
+   aceitando os mesmos argumentos de antes: chamam o motor.)
 6. **Entregar:** se houve ganho real ou a correção funciona, abrir o PR que fecha a issue, com os números agregados.
    Se o avanço for muito relevante (critérios abaixo), o mesmo PR atualiza o README. Se
    não houve, comentar o resultado na issue, que também é útil, e voltar ao passo 3.
