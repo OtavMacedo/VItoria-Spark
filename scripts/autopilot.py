@@ -58,7 +58,8 @@ def dentro_do_repo(caminho: Path) -> bool:
 def achar_jogo(arg: str | None) -> Path:
     alvo = arg or os.environ.get("SPARK_JOGO")
     if not alvo and (RAIZ / "victory.toml").exists():
-        alvo = tomllib.loads((RAIZ / "victory.toml").read_text(encoding="utf-8")).get("game_dir")
+        config = tomllib.loads((RAIZ / "victory.toml").read_text(encoding="utf-8"))
+        alvo = config.get("paths", {}).get("game_dir")
     if not alvo:
         sys.exit("Informe o título: --jogo <pasta ou .exe>, SPARK_JOGO ou game_dir em victory.toml.")
     caminho = Path(alvo)
