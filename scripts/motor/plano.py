@@ -75,7 +75,9 @@ def md(plano: dict, arquivo: str | None = None) -> str:
             linhas.append(f"  - `{c['chave']}` ataca `{c['problema']}`"
                           + (f" (hoje `{c['atual']}`)" if c.get("atual") is not None else " (hoje sem valor)"))
         if arquivo:
-            linhas += ["", f"Rodar: `python scripts/autopilot.py rodar plano-1 SPARK_PLAN={arquivo} SPARK_OFFLINE=1`"]
+            linhas += ["", f"Rodar: `python scripts/autopilot.py rodar plano-1 SPARK_PLAN={arquivo}`"]
+        else:
+            linhas += ["", "Rodar: grave o plano (`motor.py plano <sessão> --gravar`) e passe-o em `SPARK_PLAN`."]
         linhas.append("Julgar: `python scripts/motor.py ab <pasta> --exp N` (um veredito por fator).")
     else:
         linhas.append("Nenhuma chave alternável ataca os problemas desta execução: o próximo passo é código.")

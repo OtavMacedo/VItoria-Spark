@@ -1,28 +1,31 @@
 """O motor de diagnóstico do VItoria Spark: uma execução, todos os problemas, a próxima execução planejada.
 
 Uso:
-  python scripts/motor.py diagnosticar <sessão> [--json]
+  python scripts/motor.py diagnosticar <sessão> [--json] [--gravar]
       Todos os problemas da execução em ordem de custo, com evidência, correção sugerida, chaves a testar e código;
-      os problemas de medição primeiro. Grava `diagnostico.md`, `diagnostico.json`, `plano.toml` e `plano.md`.
-  python scripts/motor.py plano <sessão> [--periodo 20]
+      os problemas de medição primeiro. Com `--gravar`: `diagnostico.md`, `diagnostico.json`, `plano.toml` e
+      `plano.md` na pasta da sessão.
+  python scripts/motor.py plano <sessão> [--periodo 20] [--gravar]
       Só o plano: o `SPARK_PLAN` que testa de uma vez todas as chaves candidatas (fatorial), as chaves que pedem
-      execução própria e os itens verificáveis sem o título.
-  python scripts/motor.py ab <sessão> [--exp N] [--imagem <json>] [--ruido <ruido.json>]
+      execução própria e os itens verificáveis sem o título. Com `--gravar`: `plano.toml` e `plano.md`.
+  python scripts/motor.py ab <sessão> [--exp N] [--imagem <json>] [--ruido <ruido.json>] [--gravar]
                                       [--registrar <decisoes.jsonl> [--chave <NOME>] [--sha <commit>]]
       O veredito do A/B de uma execução (`SPARK_AB`; N de `SPARK_PLAN`). Num fatorial, um veredito por fator.
   python scripts/motor.py comparar --a <sessão> [...] --b <sessão> [...] [--imagem <json>] [--sem-medicao]
-                                      [--registrar <decisoes.jsonl> --chave <NOME> [--sha <commit>]]
+                                      [--gravar] [--registrar <decisoes.jsonl> --chave <NOME> [--sha <commit>]]
       O veredito de B contra A com execuções inteiras (2+ de cada lado) e as fases que mais mudaram.
-  python scripts/motor.py reproduzir <sessão> [--exe <victory.exe>] [--validar] [CHAVE=valor ...]
+  python scripts/motor.py reproduzir <sessão> [--exe <victory.exe>] [--validar] [--gravar] [CHAVE=valor ...]
       Sem o título: retraduz os shaders que a execução guardou (`SPARK_OFFLINE=1`) e cria as pipelines na placa;
-      diz quais falhas o build atual corrigiu.
+      diz quais falhas o build atual corrigiu. Com `--gravar`, `reproducao.json` lembra o que já falhou aqui fora
+      (só uma recusa que se repetiu sem o título pode sair CORRIGIDO sem ele).
   python scripts/motor.py ruido <sessão A/A> --gravar <ruido.json>
       O piso de ruído da máquina, de uma execução com os dois braços iguais.
   python scripts/motor.py consultar <decisoes.jsonl> [<NOME>]
       O que já foi decidido (antes de testar de novo).
 
 <sessão> = a pasta de uma execução (vale a mais nova `resumo.json` dentro dela) ou o próprio `resumo.json`.
-Tudo o que o motor grava fica na pasta da sessão, fora do repositório (docs/asset-policy.md).
+Ler não grava: sem `--gravar` os comandos só imprimem, e a pasta de uma execução (a sua ou a de outra pessoa) fica
+como estava. O que `--gravar` grava fica na pasta da sessão, nunca dentro do repositório (docs/asset-policy.md).
 """
 
 import json
@@ -55,8 +58,10 @@ def _json(caminho: str | None) -> dict | None:
     return json.loads(Path(caminho).read_text(encoding="utf-8"))
 
 
-def _gravar(pasta: Path, arquivos: dict[str, str]) -> None:
-    """Grava os arquivos na pasta da sessão; nunca dentro do repositório."""
+def _gravar(pasta: Path, arquivos: dict[str, str], pedido: bool) -> None:
+    """Grava os arquivos na pasta da sessão, se foi pedido (`--gravar`); nunca dentro do repositório."""
+    if not pedido:
+        return
     if dentro_do_repo(pasta):
         print("(nada gravado: a sessão está dentro do repositório; docs/asset-policy.md)", file=sys.stderr)
         return
@@ -65,9 +70,16 @@ def _gravar(pasta: Path, arquivos: dict[str, str]) -> None:
             (pasta / nome).write_text(texto, encoding="utf-8")
 
 
+def _fora_do_repo(caminho: str) -> None:
+    """Sai com erro se `caminho` (um arquivo a gravar) fica dentro do repositório."""
+    if dentro_do_repo(Path(caminho).resolve().parent):
+        sys.exit(f"{caminho}: saída de execução não se grava dentro do repositório (docs/asset-policy.md)")
+
+
 def _registrar(caminho: str | None, v: dict, chave: str | None, sha: str | None, pasta: Path) -> None:
     if not caminho:
         return
+    _fora_do_repo(caminho)
     with open(caminho, "a", encoding="utf-8") as f:
         for linha in veredito.registros(v, chave, sha, str(pasta), time.strftime("%Y-%m-%d %H:%M")):
             f.write(json.dumps(linha, ensure_ascii=False) + "\n")
@@ -75,6 +87,7 @@ def _registrar(caminho: str | None, v: dict, chave: str | None, sha: str | None,
 
 def diagnosticar(args: list[str]) -> int:
     so_json = _opcao(args, "--json", valor=False)
+    gravar = bool(_opcao(args, "--gravar", valor=False))
     periodo = int(_opcao(args, "--periodo") or 20)
     if not args:
         sys.exit(__doc__)
@@ -83,23 +96,26 @@ def diagnosticar(args: list[str]) -> int:
     p = plano.montar(d, periodo)
     d["plano"] = p
     arquivo_plano = s.pasta / "plano.toml"
-    texto = relatorio.diagnostico(d, p)
+    texto = relatorio.diagnostico(d, p, gravado=gravar)
     _gravar(s.pasta, {"diagnostico.md": texto, "diagnostico.json": json.dumps(d, ensure_ascii=False, indent=1),
-                      "plano.toml": plano.toml(p), "plano.md": plano.md(p, str(arquivo_plano))})
+                      "plano.toml": plano.toml(p), "plano.md": plano.md(p, str(arquivo_plano))}, gravar)
     print(json.dumps(d, ensure_ascii=False) if so_json else texto, end="" if not so_json else "\n")
     return 0
 
 
 def planejar(args: list[str]) -> int:
     periodo = int(_opcao(args, "--periodo") or 20)
+    gravar = bool(_opcao(args, "--gravar", valor=False))
     if not args:
         sys.exit(__doc__)
     s = Sessao(args[0])
     p = plano.montar(problemas.diagnosticar(s), periodo)
     arquivo = s.pasta / "plano.toml"
-    texto = plano.md(p, str(arquivo))
-    _gravar(s.pasta, {"plano.toml": plano.toml(p), "plano.md": texto})
+    texto = plano.md(p, str(arquivo) if gravar else None)
+    _gravar(s.pasta, {"plano.toml": plano.toml(p), "plano.md": texto}, gravar)
     print(texto, end="")
+    if not gravar and plano.toml(p):
+        print("\nO `plano.toml` (com `--gravar` ele fica na pasta da sessão):\n\n" + plano.toml(p), end="")
     return 0
 
 
@@ -107,6 +123,7 @@ def ab(args: list[str]) -> int:
     exp = _opcao(args, "--exp")
     imagem, ruido = _json(_opcao(args, "--imagem")), _json(_opcao(args, "--ruido"))
     registrar, chave, sha = (_opcao(args, n) for n in ("--registrar", "--chave", "--sha"))
+    gravar = bool(_opcao(args, "--gravar", valor=False))
     if not args:
         sys.exit(__doc__)
     s = Sessao(args[0])
@@ -114,7 +131,7 @@ def ab(args: list[str]) -> int:
     texto = veredito.md(v)
     sufixo = f"-{exp}" if exp is not None else ""
     _gravar(s.pasta, {f"veredito{sufixo}.md": texto,
-                      f"veredito{sufixo}.json": json.dumps(v, ensure_ascii=False, indent=1)})
+                      f"veredito{sufixo}.json": json.dumps(v, ensure_ascii=False, indent=1)}, gravar)
     print(texto, end="")
     _registrar(registrar, v, chave, sha, s.pasta)
     return 0
@@ -123,6 +140,7 @@ def ab(args: list[str]) -> int:
 def comparar(args: list[str]) -> int:
     imagem = _json(_opcao(args, "--imagem"))
     sem_medicao = bool(_opcao(args, "--sem-medicao", valor=False))
+    gravar = bool(_opcao(args, "--gravar", valor=False))
     # Aceito e ignorado: entre execuções o piso de ruído do A/B não se aplica.
     _opcao(args, "--ruido")
     registrar, chave, sha = (_opcao(args, n) for n in ("--registrar", "--chave", "--sha"))
@@ -136,7 +154,7 @@ def comparar(args: list[str]) -> int:
     texto = veredito.md(v)
     destino = Path(lado_b[0])
     pasta = destino if destino.is_dir() else destino.parent
-    _gravar(pasta, {"veredito.md": texto, "veredito.json": json.dumps(v, ensure_ascii=False, indent=1)})
+    _gravar(pasta, {"veredito.md": texto, "veredito.json": json.dumps(v, ensure_ascii=False, indent=1)}, gravar)
     print(texto, end="")
     _registrar(registrar, v, chave, sha, pasta)
     return 0
@@ -145,13 +163,14 @@ def comparar(args: list[str]) -> int:
 def reproduzir(args: list[str]) -> int:
     exe = _opcao(args, "--exe")
     validar = bool(_opcao(args, "--validar", valor=False))
+    gravar = bool(_opcao(args, "--gravar", valor=False))
     extra = dict(a.split("=", 1) for a in args[1:] if "=" in a)
     if not args:
         sys.exit(__doc__)
     s = Sessao(args[0])
     r = offline.reproduzir(s, Path(exe) if exe else None, extra, validar)
     texto = offline.md(r)
-    _gravar(s.pasta, {"reproducao.md": texto, "reproducao.json": json.dumps(r, ensure_ascii=False, indent=1)})
+    _gravar(s.pasta, {"reproducao.md": texto, "reproducao.json": json.dumps(r, ensure_ascii=False, indent=1)}, gravar)
     print(texto, end="")
     return 0 if r["estado"] in ("TUDO_CORRIGIDO", "RESTAM_FALHAS") else 1
 
@@ -166,6 +185,7 @@ def ruido(args: list[str]) -> int:
         return 1
     r = estat.ruido(dados)
     if destino:
+        _fora_do_repo(destino)
         Path(destino).write_text(json.dumps(r, indent=1), encoding="utf-8")
     print(json.dumps(r))
     return 0

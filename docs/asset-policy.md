@@ -40,6 +40,8 @@ pasta que contenha `.victory-root`.
 
 Com `SPARK_OFFLINE=1`, a pasta da sessão ganha `offline/`: os shaders do título que falharam, para serem
 verificados sem ele ([motor.md](motor.md)). São dados do jogo como quaisquer outros: ficam lá e nunca são publicados.
+A gravação se recusa a escrever dentro do repositório, e o motor só grava numa pasta de sessão quando recebe
+`--gravar`.
 
 ## Como é imposta
 

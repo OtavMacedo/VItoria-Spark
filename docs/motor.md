@@ -14,17 +14,21 @@ python scripts/motor.py ruido <sessão A/A> --gravar <ruido.json>
 python scripts/motor.py consultar <decisoes.jsonl> [<CHAVE>]
 ```
 
-`<sessão>` é a pasta de uma execução (vale o `resumo.json` mais novo dentro dela). Tudo o que o motor grava
-(`diagnostico.md`, `diagnostico.json`, `plano.toml`, `plano.md`, `veredito*.md`, `reproducao.md`) fica na pasta da
-sessão, fora do repositório. `scripts/veredito.py` e `scripts/ab_estat.py` continuam funcionando: chamam o motor.
+`<sessão>` é a pasta de uma execução (vale o `resumo.json` mais novo dentro dela). **Ler não grava:** os comandos
+só imprimem, e a pasta de uma execução fica como estava. Com `--gravar`, `diagnosticar`, `plano`, `ab`, `comparar` e
+`reproduzir` deixam o que imprimiram na pasta da sessão (`diagnostico.md`, `diagnostico.json`, `plano.toml`,
+`plano.md`, `veredito*.md`, `reproducao.md`), nunca dentro do repositório; `autopilot.py rodar` grava assim os da
+execução que acabou de fazer. `--registrar` e `ruido --gravar` recusam um destino dentro do repositório.
+`scripts/veredito.py` e `scripts/ab_estat.py` continuam funcionando como antes: chamam o motor.
 
 ## O ciclo com o motor
 
 1. **Uma execução de base** (`python scripts/autopilot.py rodar base-1`): no fim sai o diagnóstico.
 2. **Ler `diagnostico.md`**: primeiro a seção *Medição*. Se o estado é `PROBLEMA_DE_MEDICAO`, os números não valem:
    siga a ação indicada e repita. Senão, a lista de problemas já diz o que atacar, com que chave e em que arquivo.
-3. **Uma execução para todas as chaves** (`SPARK_PLAN=<sessão>/plano.toml`): o plano põe as chaves candidatas como
-   fatores de um A/B fatorial; `motor.py ab <pasta> --exp N` dá um veredito por chave.
+3. **Uma execução para todas as chaves** (`SPARK_PLAN=<sessão>/plano.toml`; `motor.py plano <sessão> --gravar` o
+   grava quando a execução não veio do `autopilot.py rodar`): o plano põe as chaves candidatas como fatores de um
+   A/B fatorial; `motor.py ab <pasta> --exp N` dá um veredito por chave.
 4. **Código sem o título**: para shaders que não traduzem e pipelines recusadas, mude o tradutor e rode
    `motor.py reproduzir <sessão>` até os itens ficarem `CORRIGIDO`.
 5. **Uma execução de confirmação** no fim do lote (depois de `aquecer`), comparada com a base.

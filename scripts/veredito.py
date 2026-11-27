@@ -6,6 +6,9 @@ Uso:
   python scripts/veredito.py --a <sessão> [...] --b <sessão> [...]          # = motor.py comparar
   python scripts/veredito.py --consultar <decisoes.jsonl> [<NOME>]          # = motor.py consultar
   opções: [--imagem <json>] [--ruido <ruido.json>] [--registrar <decisoes.jsonl> --chave <NOME> [--sha <commit>]]
+
+Como sempre fez, este comando deixa `veredito.md` e `veredito.json` na pasta da sessão (no `motor.py`, só com
+`--gravar`).
 """
 
 import sys
@@ -22,7 +25,7 @@ def main() -> int:
         return 2
     if args[0] == "--consultar":
         return motor(["consultar", *args[1:]])
-    return motor(["comparar" if "--a" in args else "ab", *args])
+    return motor(["comparar" if "--a" in args else "ab", "--gravar", *args])
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ def _chaves(p: dict) -> str | None:
     return ", ".join(partes) or None
 
 
-def diagnostico(d: dict, plano: dict | None = None) -> str:
+def diagnostico(d: dict, plano: dict | None = None, gravado: bool = True) -> str:
+    """O relatório. `gravado`: o `plano.toml` está na pasta da sessão (senão diz como obtê-lo)."""
     q = d["quadro"]
     linhas = [f"# Diagnóstico: {d['sessao']} ({d['estado']})", ""]
     ad = d.get("adaptador") or {}
@@ -57,7 +58,8 @@ def diagnostico(d: dict, plano: dict | None = None) -> str:
     if plano is not None:
         linhas += ["", "## Próxima execução", ""]
         if plano["experimentos"]:
-            linhas.append(f"- {len(plano['alternaveis'])} chave(s) num só plano (`plano.toml` nesta pasta): "
+            onde = "`plano.toml` nesta pasta" if gravado else "`motor.py plano <sessão> --gravar` deixa o `plano.toml`"
+            linhas.append(f"- {len(plano['alternaveis'])} chave(s) num só plano ({onde}): "
                           + "; ".join(f"`{e['ab']}`" for e in plano["experimentos"]))
         else:
             linhas.append("- nenhuma chave alternável ataca estes problemas: o próximo passo é código")

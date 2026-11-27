@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from amostras import Parada  # noqa: E402
+from motor.sessao import dentro_do_repo  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -53,10 +54,6 @@ else:
 EXE = Path(os.environ.get("VICTORY_EXE", _EXE_PADRAO))
 BASE = Path(os.environ.get("SPARK_LOG_DIR", _BASE_PADRAO))
 CONFIRMACAO = BASE.parent / "autopilot-confirmado.txt"
-
-
-def dentro_do_repo(caminho: Path) -> bool:
-    return any((p / ".victory-root").exists() for p in [caminho, *caminho.parents])
 
 
 def game_dir_do_toml(texto: str) -> str | None:
@@ -251,15 +248,15 @@ def rodar(args: list[str]) -> int:
     if parada.ab and resumos:
         # O veredito (um por experimento do plano), com o piso de ruído se houver.
         ruido = BASE / "ruido.json"
-        cmd = motor + ["ab", str(pasta)] + (["--ruido", str(ruido)] if ruido.exists() else [])
+        cmd = motor + ["ab", str(pasta), "--gravar"] + (["--ruido", str(ruido)] if ruido.exists() else [])
         for exp in range(len(parada.experimentos)) if parada.plano else [None]:
             subprocess.run(cmd + (["--exp", str(exp)] if exp is not None else []))
     print(f"pasta: {pasta}")
     if resumos:
         print(f"resumo: {resumos[-1]}")
         # O diagnóstico inteiro fica na pasta; aqui só o estado e os primeiros problemas.
-        r = subprocess.run(motor + ["diagnosticar", str(pasta)], capture_output=True, text=True, encoding="utf-8",
-                           errors="replace")
+        r = subprocess.run(motor + ["diagnosticar", str(pasta), "--gravar"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         print("\n".join(r.stdout.splitlines()[:24]))
         print(f"diagnóstico: {resumos[-1].parent / 'diagnostico.md'}")
     return 0

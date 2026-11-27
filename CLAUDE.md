@@ -45,7 +45,8 @@ do título roda no processo; nós fornecemos carregador (`victory-loader`, `vict
   descartados. Não julgue a imagem nessa rodada.
 - Antes de concluir: `cargo fmt`, `cargo clippy ... -D warnings`, testes do crate tocado e `cargo xtask policy`.
 - Para analisar uma execução, rode `python scripts/motor.py diagnosticar <pasta>` ([docs/motor.md](docs/motor.md)) e
-  leia o `diagnostico.md`: todos os problemas em ordem, com evidência e correção sugerida. Só depois filtre o
+  leia a saída (ler não grava; `--gravar` deixa `diagnostico.md` na pasta da sessão, e só se usa na execução que
+  você mesmo fez): todos os problemas em ordem, com evidência e correção sugerida. Só depois filtre o
   `eventos.jsonl` pelo `target` que interessa. Não carregue o log inteiro no contexto.
 
 ## AutoPilot Mode

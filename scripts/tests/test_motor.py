@@ -530,9 +530,27 @@ class Conhecimento(unittest.TestCase):
 
 
 class Comandos(ComSessao):
+    def test_ler_nao_grava(self):
+        s = self.sessao(resumo(ab=blocos([-0.05])))
+        antes = sorted(f.name for f in s.pasta.iterdir())
+        for comando in (["diagnosticar"], ["diagnosticar", "--json"], ["plano"], ["ab"], ["reproduzir"],
+                        ["ruido"]):
+            main([comando[0], str(s.pasta), *comando[1:]])
+        self.assertEqual(main(["comparar", "--a", str(s.pasta), str(s.pasta), "--b", str(s.pasta), str(s.pasta)]), 0)
+        self.assertEqual(sorted(f.name for f in s.pasta.iterdir()), antes)
+
+    def test_registro_e_ruido_nao_se_gravam_no_repositorio(self):
+        s = self.sessao(resumo(ab=blocos([0.0])))
+        for args in (["ab", str(s.pasta), "--registrar", str(RAIZ / "scripts" / "decisoes-de-teste.jsonl")],
+                     ["ruido", str(s.pasta), "--gravar", str(RAIZ / "scripts" / "ruido-de-teste.json")]):
+            with self.assertRaises(SystemExit):
+                main(args)
+        self.assertFalse((RAIZ / "scripts" / "decisoes-de-teste.jsonl").exists())
+        self.assertFalse((RAIZ / "scripts" / "ruido-de-teste.json").exists())
+
     def test_diagnosticar_grava_na_pasta_da_sessao_e_nunca_no_repositorio(self):
         s = self.sessao(resumo())
-        self.assertEqual(main(["diagnosticar", str(s.pasta)]), 0)
+        self.assertEqual(main(["diagnosticar", str(s.pasta), "--gravar"]), 0)
         for nome in ("diagnostico.md", "diagnostico.json", "plano.toml", "plano.md"):
             self.assertTrue((s.pasta / nome).exists(), nome)
         d = json.loads((s.pasta / "diagnostico.json").read_text(encoding="utf-8"))
@@ -543,7 +561,8 @@ class Comandos(ComSessao):
     def test_ab_registra_uma_decisao(self):
         s = self.sessao(resumo(ab=blocos([-0.05])))
         decisoes = Path(self.tmp.name) / "decisoes.jsonl"
-        self.assertEqual(main(["ab", str(s.pasta), "--registrar", str(decisoes), "--chave", "VICTORY_F0"]), 0)
+        self.assertEqual(main(["ab", str(s.pasta), "--gravar", "--registrar", str(decisoes), "--chave",
+                               "VICTORY_F0"]), 0)
         linha = json.loads(decisoes.read_text(encoding="utf-8"))
         self.assertEqual((linha["chave"], linha["estado"]), ("VICTORY_F0", "GANHO"))
         self.assertTrue((s.pasta / "veredito.md").exists())

@@ -12,7 +12,8 @@ máquina e por assistentes de IA com contexto limitado.
 | `eventos.jsonl` | Um objeto JSON por linha: a 1ª linha é a sessão, as demais são os eventos do log. |
 
 Quem lê tudo isso por você é o motor de diagnóstico ([motor.md](motor.md)): `python scripts/motor.py diagnosticar
-<pasta>` devolve todos os problemas da execução em ordem, com evidência e correção sugerida.
+<pasta>` devolve todos os problemas da execução em ordem, com evidência e correção sugerida (só imprime; com
+`--gravar` deixa `diagnostico.md` e `plano.toml` na pasta).
 
 `resumo.*` é reescrito a cada ~60 s e no fim (saída do título, `abort`,
 falha, perda do dispositivo), então mesmo um crash deixa um resumo.
@@ -191,12 +192,12 @@ quem acompanha a execução (`scripts/amostras.py`, usado por `scripts/autopilot
 o atual decide. Cada experimento novo começa com um bloco de lavagem no braço A, fora das contas. O resumo traz um
 `ab` por experimento em `ab_experiments` e uma seção "A/B na rodada" para cada um; `python scripts/motor.py ab
 <pasta> --exp N` julga o experimento N. Um experimento pode ser fatorial (`ab = "VICTORY_X*VICTORY_Y"`); o plano
-que `motor.py diagnosticar` grava (`plano.toml`) junta assim todas as chaves candidatas da execução.
+que `motor.py diagnosticar --gravar` grava (`plano.toml`) junta assim todas as chaves candidatas da execução.
 
 ## Fluxo recomendado com uma IA
 
 1. Rode o jogo e feche normalmente (ou deixe cair).
-2. Rode `python scripts/motor.py diagnosticar <pasta>` e entregue o `diagnostico.md` (ou **só o `resumo.md`**),
+2. Rode `python scripts/motor.py diagnosticar <pasta> --gravar` e entregue o `diagnostico.md` (ou **só o `resumo.md`**),
    com algo como:
 
    > Este é o resumo de uma execução do VItoria Spark (camada Xbox Series →
