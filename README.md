@@ -94,7 +94,7 @@ Medido em 26/11/2026 numa RTX 3060 12 GB, com Ryzen 5 5600GT e 32 GB de RAM.
 
 | Placa | Mediana no mundo | Picos | Cena | Situação |
 |---|---|---|---|---|
-| **NVIDIA** RTX 3060 12 GB | 3,2–3,6 fps | 6,4 fps | pesada, ~4.750 desenhos/quadro | medido (2 sessões de 9 min) |
+| **NVIDIA** RTX 3060 12 GB | 4,2–4,3 fps (antes 3,6–3,8) | 6,4 fps | pesada, ~4.750 desenhos/quadro | medido: A/B na execução + 2+2 execuções, cópia simples e apresentação assíncrona ligadas |
 | **AMD** | — | — | — | aguardando medição: [contribua](#-autopilot-mode) |
 | **Intel** | — | — | — | aguardando medição |
 
