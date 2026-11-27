@@ -9372,43 +9372,13 @@ impl HostList {
 /// The write-watch journal and the guards are behind their own locks, as
 /// they are for the title's threads.
 ///
-/// `VICTORY_WIDE_REFRESH=alt`: twenty seconds with, twenty without, in
-/// turn, each change said in the log (run 112 measured the switch worse,
-/// copies 52 -> 68 ms, in a build whose copies went through the kernel one
-/// by one; they are plain copies with one asking ahead now).
+/// `VICTORY_WIDE_REFRESH=alt` (or `SPARK_AB=VICTORY_WIDE_REFRESH`):
+/// alternates inside the run in the blocks of `victory_core::ab`
+/// (`crate::switches`). Run 112 measured the switch worse, copies 52 -> 68
+/// ms, in a build whose copies went through the kernel one by one; they
+/// are plain copies with one asking ahead now.
 fn wide_refresh() -> bool {
-    /// 0 off, 1 on, 2 in turn.
-    static MODE: OnceLock<u8> = OnceLock::new();
-    match *MODE.get_or_init(|| match std::env::var("VICTORY_WIDE_REFRESH").as_deref() {
-        Ok("1") => 1,
-        Ok("alt") => 2,
-        _ => 0,
-    }) {
-        0 => false,
-        1 => true,
-        _ => {
-            static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-            let on = (EPOCH
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_secs()
-                / 20)
-                % 2
-                == 1;
-            static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
-            if LAST.swap(u8::from(on), Ordering::Relaxed) != u8::from(on) {
-                tracing::info!(
-                    "a submission's copies are spread over the helper threads from now (VICTORY_WIDE_REFRESH=alt): {}",
-                    if on {
-                        "ON"
-                    } else {
-                        "off, one after the other as usual"
-                    }
-                );
-            }
-            on
-        }
-    }
+    crate::switches::WIDE_REFRESH.on()
 }
 
 /// Whether a range of a host copy brought up to date in a submission is

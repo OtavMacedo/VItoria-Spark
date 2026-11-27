@@ -26,6 +26,9 @@ pub(crate) static TEXTURE_ROOM_PERCENT: Toggle =
 
 /// `VICTORY_WIDE_MERGE` (`crate::host`).
 pub(crate) static WIDE_MERGE: Toggle = Toggle::flag("VICTORY_WIDE_MERGE");
+/// `VICTORY_WIDE_REFRESH` (`crate::host`): each flush decides on its own
+/// whether its refreshes go to the helper threads.
+pub(crate) static WIDE_REFRESH: Toggle = Toggle::flag("VICTORY_WIDE_REFRESH");
 
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
@@ -49,7 +52,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 7] = [
+pub static TABLE: [Entry; 8] = [
     Entry {
         toggle: &CARD_SYNC_BATCH,
         part: "copias",
@@ -87,6 +90,11 @@ pub static TABLE: [Entry; 7] = [
     Entry {
         toggle: &WIDE_MERGE,
         part: "copia_de_volta",
+        inert: &[],
+    },
+    Entry {
+        toggle: &WIDE_REFRESH,
+        part: "copias",
         inert: &[],
     },
 ];
