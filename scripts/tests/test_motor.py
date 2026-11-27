@@ -168,6 +168,9 @@ class Medicao(ComSessao):
         self.assertEqual(self.ids(r), {"sem_cena_estavel": True})
         r["first_world_frame_s"] = None
         self.assertEqual(self.ids(r), {"sem_mundo": True})
+        antigo = resumo()
+        del antigo["stable_scene"]
+        self.assertEqual(self.ids(antigo), {})
 
     def test_faltas_de_pagina_e_ram(self):
         r = resumo(long_world_frames_over_1s=30)

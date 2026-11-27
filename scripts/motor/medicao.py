@@ -47,6 +47,9 @@ def verificar(s: Sessao) -> list[dict]:
     if r.get("first_world_frame_s") is None:
         out.append(_achado("sem_mundo", True, "a execução não chegou ao mundo",
                            "ver avisos e erros do carregamento; não há quadro para medir"))
+    elif "stable_scene" not in r:
+        # Resumo de antes da cena estável: o motor usa as medianas do mundo, sem este critério.
+        pass
     elif est.get("from_s") is None:
         out.append(_achado("sem_cena_estavel", True,
                            f"a cena estável ({est.get('draws_at_least', '?')}+ desenhos por quadro) não foi alcançada",
