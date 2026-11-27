@@ -39,7 +39,10 @@ fn the_interface_plane_is_blended_over_what_the_back_buffer_holds() {
                         DepthOrArraySize: 1,
                         MipLevels: 1,
                         Format: RGBA8,
-                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
                         Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
                         ..Default::default()
                     },
@@ -55,7 +58,9 @@ fn the_interface_plane_is_blended_over_what_the_back_buffer_holds() {
         // SAFETY: the copy location borrows this resource.
         pResource: unsafe { std::mem::transmute_copy(r) },
         Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            SubresourceIndex: 0,
+        },
     };
     let rows = |r: &ID3D12Resource| D3D12_TEXTURE_COPY_LOCATION {
         // SAFETY: the copy location borrows this resource.
@@ -74,7 +79,8 @@ fn the_interface_plane_is_blended_over_what_the_back_buffer_holds() {
             },
         },
     };
-    let mut pass = Compose::new(&host.device, RGBA8).expect("the pass's shaders, root signature and pipeline");
+    let mut pass =
+        Compose::new(&host.device, RGBA8).expect("the pass's shaders, root signature and pipeline");
     let target_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     let present = D3D12_RESOURCE_STATE_PRESENT;
     let interface = texture(target_state);
@@ -91,11 +97,27 @@ fn the_interface_plane_is_blended_over_what_the_back_buffer_holds() {
         // The interface plane: two columns clear, one half covered
         // (premultiplied), two opaque.
         let interface_view = host.rtv(Some(&interface), None);
-        let strip = |left, right| RECT { left, right, top: 0, bottom: 3 };
+        let strip = |left, right| RECT {
+            left,
+            right,
+            top: 0,
+            bottom: 3,
+        };
         list.ClearRenderTargetView(interface_view, &[0.0; 4], None);
-        list.ClearRenderTargetView(interface_view, &[0.0, 128.0 / 255.0, 0.0, 128.0 / 255.0], Some(&[strip(2, 3)]));
+        list.ClearRenderTargetView(
+            interface_view,
+            &[0.0, 128.0 / 255.0, 0.0, 128.0 / 255.0],
+            Some(&[strip(2, 3)]),
+        );
         list.ClearRenderTargetView(interface_view, &[1.0, 0.0, 0.0, 1.0], Some(&[strip(3, 5)]));
-        pass.record(&host.device, list, &back, (5, 3), &interface, target_state.0 as u32);
+        pass.record(
+            &host.device,
+            list,
+            &back,
+            (5, 3),
+            &interface,
+            target_state.0 as u32,
+        );
         list.ResourceBarrier(&[transition(&back, present, D3D12_RESOURCE_STATE_COPY_SOURCE)]);
         list.CopyTextureRegion(&rows(&read), 0, 0, 0, &sub(&back), None);
     }
@@ -107,7 +129,8 @@ fn the_interface_plane_is_blended_over_what_the_back_buffer_holds() {
     // SAFETY: `execute` waited for the copy; each row holds five texels.
     unsafe {
         let mut at = std::ptr::null_mut();
-        read.Map(0, None, Some(&mut at)).expect("the read-back buffer mapped");
+        read.Map(0, None, Some(&mut at))
+            .expect("the read-back buffer mapped");
         for (y, row) in texels.iter_mut().enumerate() {
             row.copy_from_slice(std::slice::from_raw_parts(at.cast::<u8>().add(y * 256), 20));
         }

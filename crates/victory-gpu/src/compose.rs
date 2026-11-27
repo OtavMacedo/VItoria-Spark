@@ -144,14 +144,18 @@ fn root_signature(device: &ID3D12Device) -> windows::core::Result<ID3D12RootSign
     unsafe {
         D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)?;
         let blob = blob.ok_or_else(windows::core::Error::empty)?;
-        let bytes = std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize());
+        let bytes =
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize());
         device.CreateRootSignature(0, bytes)
     }
 }
 
 impl Compose {
     /// The pass for back buffers of `format`.
-    pub(crate) fn new(device: &ID3D12Device, format: DXGI_FORMAT) -> windows::core::Result<Compose> {
+    pub(crate) fn new(
+        device: &ID3D12Device,
+        format: DXGI_FORMAT,
+    ) -> windows::core::Result<Compose> {
         use windows::core::s;
         let vs = compile(SOURCE, s!("corner"), s!("vs_5_1"))?;
         let ps = compile(SOURCE, s!("blend"), s!("ps_5_1"))?;
@@ -171,7 +175,11 @@ impl Compose {
             blend.RenderTarget[0] = D3D12_RENDER_TARGET_BLEND_DESC {
                 BlendEnable: true.into(),
                 LogicOpEnable: false.into(),
-                SrcBlend: if straight() { D3D12_BLEND_SRC_ALPHA } else { D3D12_BLEND_ONE },
+                SrcBlend: if straight() {
+                    D3D12_BLEND_SRC_ALPHA
+                } else {
+                    D3D12_BLEND_ONE
+                },
                 DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
                 BlendOp: D3D12_BLEND_OP_ADD,
                 SrcBlendAlpha: D3D12_BLEND_ONE,
@@ -202,25 +210,32 @@ impl Compose {
                 ..Default::default()
             };
             let pipeline: ID3D12PipelineState = device.CreateGraphicsPipelineState(&desc)?;
-            let views: ID3D12DescriptorHeap = device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                NumDescriptors: RING,
-                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                NodeMask: 0,
-            })?;
-            let targets: ID3D12DescriptorHeap = device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                NumDescriptors: RING,
-                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-                NodeMask: 0,
-            })?;
-            tracing::info!(format = format.0, "present planes: the second is blended over the first");
+            let views: ID3D12DescriptorHeap =
+                device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                    NumDescriptors: RING,
+                    Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                    NodeMask: 0,
+                })?;
+            let targets: ID3D12DescriptorHeap =
+                device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                    NumDescriptors: RING,
+                    Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                    NodeMask: 0,
+                })?;
+            tracing::info!(
+                format = format.0,
+                "present planes: the second is blended over the first"
+            );
             Ok(Compose {
                 format,
                 root,
                 pipeline,
-                view_step: device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
-                target_step: device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV),
+                view_step: device
+                    .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
+                target_step: device
+                    .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV),
                 views,
                 targets,
                 next: 0,
@@ -268,15 +283,21 @@ impl Compose {
                 },
             };
             let at = D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: self.views.GetCPUDescriptorHandleForHeapStart().ptr + (slot * self.view_step) as usize,
+                ptr: self.views.GetCPUDescriptorHandleForHeapStart().ptr
+                    + (slot * self.view_step) as usize,
             };
             device.CreateShaderResourceView(interface, Some(&view), at);
             let target = D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: self.targets.GetCPUDescriptorHandleForHeapStart().ptr + (slot * self.target_step) as usize,
+                ptr: self.targets.GetCPUDescriptorHandleForHeapStart().ptr
+                    + (slot * self.target_step) as usize,
             };
             device.CreateRenderTargetView(back, None, target);
             // What moves for the pass, and back after it.
-            let mut moves: Vec<(&ID3D12Resource, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATES)> = Vec::new();
+            let mut moves: Vec<(
+                &ID3D12Resource,
+                D3D12_RESOURCE_STATES,
+                D3D12_RESOURCE_STATES,
+            )> = Vec::new();
             if interface_state & PIXEL_SHADER_RESOURCE == 0 {
                 moves.push((
                     interface,
@@ -284,12 +305,17 @@ impl Compose {
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 ));
             }
-            moves.push((back, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+            moves.push((
+                back,
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+            ));
             let before: Vec<_> = moves.iter().map(|&(r, a, b)| transition(r, a, b)).collect();
             list.ResourceBarrier(&before);
             list.SetGraphicsRootSignature(&self.root);
             list.SetDescriptorHeaps(&[Some(self.views.clone())]);
-            let gpu = self.views.GetGPUDescriptorHandleForHeapStart().ptr + u64::from(slot * self.view_step);
+            let gpu = self.views.GetGPUDescriptorHandleForHeapStart().ptr
+                + u64::from(slot * self.view_step);
             list.SetGraphicsRootDescriptorTable(0, D3D12_GPU_DESCRIPTOR_HANDLE { ptr: gpu });
             list.SetPipelineState(&self.pipeline);
             list.OMSetRenderTargets(1, Some(&target), false, None);

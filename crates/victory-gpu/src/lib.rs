@@ -36,6 +36,8 @@ mod copystat;
 #[cfg(all(feature = "mimalloc", not(all(windows, feature = "diagnostics"))))]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(windows)]
+mod compose;
 pub mod descriptor;
 pub mod device;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -46,8 +48,6 @@ mod draw;
 mod drvwatch;
 pub mod dxgi;
 pub mod fence;
-#[cfg(windows)]
-mod compose;
 #[cfg(windows)]
 mod fpsbox;
 pub mod frame;

@@ -10537,7 +10537,8 @@ impl Host {
             let list = &copy.list;
             // The second present plane (the Series S interface), blended
             // over the first by `crate::compose` once the first is copied.
-            static NO_COMPOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            static NO_COMPOSE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
             if interface.is_some()
                 && !NO_COMPOSE.load(Ordering::Relaxed)
                 && p.compose.as_ref().is_none_or(|c| c.format() != p.format)
@@ -10572,7 +10573,14 @@ impl Host {
                         D3D12_RESOURCE_STATE_COPY_DEST,
                         D3D12_RESOURCE_STATE_PRESENT,
                     )]);
-                    c.record(&self.device, list, &back, (p.width, p.height), overlay, overlay_state);
+                    c.record(
+                        &self.device,
+                        list,
+                        &back,
+                        (p.width, p.height),
+                        overlay,
+                        overlay_state,
+                    );
                     list.ResourceBarrier(&[transition(
                         &back,
                         D3D12_RESOURCE_STATE_PRESENT,
