@@ -561,6 +561,34 @@ class Parada(ComSessao):
         self.assertEqual(p.resultados[0]["estado"], "DECIDIDO")
 
 
+class SemMundo(unittest.TestCase):
+    """A parada de `scripts/amostras.py` quando os quadros saem e nenhum chega ao mundo."""
+
+    def parada(self, draws: int, env: dict, segundos_desde_o_inicio: float) -> amostras.Parada:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        log = Path(self.tmp.name) / "saida.log"
+        linhas = [f"2026-01-01T00:{t // 60:02d}:{t % 60:02d}.000Z  INFO 30.0 fps, 33.3 ms/frame (x) {draws} draws/frame"
+                  for t in range(0, 60, 5)]
+        log.write_text("\n".join(linhas) + "\n", encoding="utf-8")
+        p = amostras.Parada(log, None, env)
+        p.inicio_relogio -= segundos_desde_o_inicio
+        return p
+
+    def test_menus_alem_do_limite_param_a_execucao(self):
+        self.assertTrue(self.parada(39, {}, 301).decidir().startswith("SEM MUNDO"))
+
+    def test_menus_antes_do_limite_seguem(self):
+        self.assertIsNone(self.parada(39, {}, 120).decidir())
+
+    def test_o_limite_vem_do_ambiente_e_zero_desliga(self):
+        self.assertTrue(self.parada(39, {"SPARK_SEM_MUNDO_S": "60"}, 61).decidir().startswith("SEM MUNDO"))
+        self.assertIsNone(self.parada(39, {"SPARK_SEM_MUNDO_S": "0"}, 900).decidir())
+
+    def test_no_mundo_nao_vale(self):
+        self.assertIsNone(self.parada(5000, {}, 301).decidir())
+
+
 class Carona(unittest.TestCase):
     def test_pedidos_de_varios_planos_viram_um_fatorial(self):
         a = {"origem": "a", "periodo_s": 20, "experimento": [{"nome": "x", "ab": "VICTORY_A"},

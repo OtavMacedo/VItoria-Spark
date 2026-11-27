@@ -17,6 +17,8 @@ enquanto ele cresce e diz quando parar.
 - Com `SPARK_PLAN=<plano.toml>` (vários experimentos numa execução): a mesma regra por experimento; ao decidir um,
   escreve o número do seguinte em `<plano.toml>.atual` (o motor passa a ele na próxima troca de bloco, depois de um
   bloco de lavagem) e para a execução depois do último. `resultados` guarda a decisão estatística de cada um.
+- Sem mundo: com quadros saindo e nenhum no mundo por `SPARK_SEM_MUNDO_S` (300) segundos, para (0 desliga). É o
+  título parado numa tela que as teclas do script não passam.
 """
 
 import json
@@ -40,6 +42,9 @@ MUNDO_DRAWS = 500
 # Sem linha de quadro por tanto tempo, a execução travou (as linhas saem a cada segundo; quadros de 5 s existem).
 TRAVA_MUNDO_S = 120
 TRAVA_INICIO_S = 420
+# Quadros saindo e nenhum no mundo: o título parou numa tela que as teclas do script não passam (a primeira
+# configuração de um perfil novo, por exemplo). O mundo chega em 60-90 s nas execuções medidas.
+SEM_MUNDO_S = 300
 
 
 def _num(nome: str, padrao: float, env: dict | None) -> float:
@@ -83,6 +88,7 @@ class Parada:
         # Relógio da máquina da última linha de quadro lida: sem linha nova por muito tempo, a execução travou.
         self.linha_relogio: float | None = None
         self.inicio_relogio = time.time()
+        self.sem_mundo_s = _num("SPARK_SEM_MUNDO_S", SEM_MUNDO_S, env)
         self.mundo_t: float | None = None
         self.estavel_t: float | None = None
         self.primeira_t: float | None = None
@@ -152,6 +158,10 @@ class Parada:
             return f"TRAVOU: nenhuma linha de quadro há {agora - self.linha_relogio:.0f} s no mundo"
         if self.linha_relogio is None and agora - self.inicio_relogio > TRAVA_INICIO_S:
             return f"TRAVOU: nenhuma linha de quadro em {agora - self.inicio_relogio:.0f} s"
+        if (self.sem_mundo_s and self.mundo_t is None and self.linha_relogio is not None
+                and agora - self.inicio_relogio > self.sem_mundo_s):
+            return (f"SEM MUNDO: {agora - self.inicio_relogio:.0f} s com quadros e nenhum no mundo "
+                    f"({MUNDO_DRAWS}+ desenhos)")
         if self.maximo and n >= self.maximo and not self.ab:
             return f"parado com {n} amostras da cena estável (teto)"
         if self.ab:

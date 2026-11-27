@@ -178,6 +178,10 @@ Este documento não é aconselhamento jurídico. As leis variam por país; em ca
 - Não existe a confirmação de `scripts/autopilot.py confirmar`.
 - O `game_dir`, os logs ou o cache estão dentro do repositório.
 - Um hook ou a CI recusou algo. O agente corrige; nunca usa `--no-verify`.
+- O título não chega ao mundo em `SPARK_SEM_MUNDO_S` (300) segundos, embora os quadros saiam: parou numa tela que
+  as teclas do script não passam (a primeira configuração de um perfil novo, por exemplo). O `rodar` diz a última
+  captura e como passar dessa tela uma vez à mão; o agente avisa a pessoa e não insiste com outras teclas às cegas,
+  que no menu principal podem escolher outra opção.
 - Duas execuções seguidas falham na inicialização pelo mesmo motivo: ele abre uma issue com o código de exceção, o
   módulo e o offset, sem log.
 - Atingiu o limite de issues/PRs da sessão ou ficou sem um alvo medido.
