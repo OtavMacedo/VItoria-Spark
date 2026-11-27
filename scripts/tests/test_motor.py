@@ -395,6 +395,12 @@ class Plano(ComSessao):
         p = plano.montar(problemas.diagnosticar(self.sessao(r)))
         self.assertNotIn("VICTORY_MERGE_MASK", [c["chave"] for c in p["alternaveis"]])
 
+    def test_chave_rejeitada_fica_fora(self):
+        p = plano.montar(problemas.diagnosticar(self.sessao(resumo())))
+        chaves = [c["chave"] for c in p["alternaveis"]]
+        self.assertNotIn("VICTORY_SKIP_WC_BACK", chaves)
+        self.assertTrue(set(conhecimento.REJEITADA) <= set(conhecimento.alternaveis()))
+
     def test_sem_contenier_guardado_pede_spark_offline(self):
         r = resumo(refused_pipelines=[{"key": "[compute 8899aabbccddeeff]", "count": 1, "detail": "refused"}])
         p = plano.montar(problemas.diagnosticar(self.sessao(r)))

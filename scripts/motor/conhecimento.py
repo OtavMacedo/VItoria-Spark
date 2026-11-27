@@ -33,6 +33,9 @@ def _queue2_no_bit_2(env: dict) -> bool:
 
 # Chave alternável e a configuração que a deixa sem efeito (o runtime recusa o plano; o motor nem a propõe).
 INERTE = {"VICTORY_MERGE_MASK": _queue2_no_bit_2}
+# Chaves alternáveis já decididas contra, com o motivo: o tempo delas já foi medido e a imagem as recusa, então
+# propô-las de novo só gasta um fator de cada plano e, com estado que persiste, estraga as capturas das outras.
+REJEITADA = {"VICTORY_SKIP_WC_BACK": "perde escritas da placa e estraga a imagem (README, \"Ainda não\")"}
 
 # Por fase: título, o que é, onde fica o código, e chaves lidas uma vez (precisam de execução própria), cada
 # uma com o valor a tentar e o que faz.
@@ -156,7 +159,7 @@ def chaves_da_fase(fase: str, env: dict, raiz: Path = RAIZ) -> list[dict]:
     out = []
     for nome, sua in alternaveis(raiz).items():
         if sua == fase or (fase == "preparing_other" and sua == "preparing"):
-            if nome in INERTE and INERTE[nome](env):
+            if nome in REJEITADA or (nome in INERTE and INERTE[nome](env)):
                 continue
             out.append({"nome": nome, "alternavel": True, "ab": espec_ab(nome), "atual": env.get(nome)})
     for nome, valor, nota in FASES.get(fase, {}).get("chaves", []):
