@@ -289,9 +289,12 @@ achar_titulo() {
     local alvo=$1
     [[ -f $alvo ]] && { printf '%s\n' "$alvo"; return; }
     [[ -d $alvo ]] || erro "não existe: $alvo"
-    local nomes exes
-    if [[ -f $alvo/MicrosoftGame.config ]]; then
-        mapfile -t nomes < <(grep -oE '<Executable[^>]*Name="[^"]+"' "$alvo/MicrosoftGame.config" | sed -E 's/.*Name="([^"]+)".*/\1/')
+    local nomes exes config
+    # O pacote grava MicrosoftGame.Config ou .config, e aqui o nome distingue maiúsculas.
+    config=$(find "$alvo" -maxdepth 1 -iname 'MicrosoftGame.config' -print -quit)
+    if [[ -n $config ]]; then
+        # O espaço antes de Name impede casar com OverrideDisplayName e afins.
+        mapfile -t nomes < <(grep -oE '<Executable[^>]*[[:space:]]Name="[^"]+"' "$config" | sed -E 's/.*[[:space:]]Name="([^"]+)".*/\1/')
         if (( ${#nomes[@]} == 1 )); then
             printf '%s\n' "$alvo/${nomes[0]//\\//}"
             return
