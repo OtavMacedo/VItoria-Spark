@@ -74,6 +74,11 @@ def md(plano: dict, arquivo: str | None = None) -> str:
         for c in plano["alternaveis"]:
             linhas.append(f"  - `{c['chave']}` ataca `{c['problema']}`"
                           + (f" (hoje `{c['atual']}`)" if c.get("atual") is not None else " (hoje sem valor)"))
+        persistentes = [c["chave"] for c in plano["alternaveis"] if c["chave"] in K.IMAGEM_SO_ENTRE_EXECUCOES]
+        if persistentes:
+            linhas.append(f"  - {', '.join(f'`{c}`' for c in persistentes)}: o que fazem à memória persiste entre os "
+                          "blocos; esta execução julga o tempo de todas as chaves, e as capturas dela não julgam a "
+                          "imagem de nenhuma")
         if arquivo:
             linhas += ["", f"Rodar: `python scripts/autopilot.py rodar plano-1 SPARK_PLAN={arquivo}`"]
         else:

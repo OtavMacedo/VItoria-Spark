@@ -23,13 +23,10 @@ longos de cada um usa 5 %/k.
 import math
 
 from . import estat, medicao
+from .conhecimento import IMAGEM_SO_ENTRE_EXECUCOES
 from .sessao import Sessao
 
 GANHO_MIN_PCT = 3.0
-# Chaves cujo efeito na memória persiste depois que o braço troca (uma escrita perdida ou adiada fica velha até o
-# fim da execução): no A/B na execução o braço A herda o estado do B, então a imagem por braço não vale; julgue a
-# imagem com execuções separadas.
-IMAGEM_SO_ENTRE_EXECUCOES = ("VICTORY_SKIP_WC_BACK", "VICTORY_MERGE_MASK")
 P95_MAX_PCT = 5.0
 
 

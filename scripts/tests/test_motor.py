@@ -362,6 +362,12 @@ class Plano(ComSessao):
         self.assertEqual(texto.count("[[experimento]]"), len(p["experimentos"]))
         self.assertEqual(sum(e["ab"].count("*") + 1 for e in p["experimentos"]), len(chaves))
         self.assertIn("SPARK_PLAN=", plano.md(p, "plano.toml"))
+        # Uma chave de estado persistente no plano tira das capturas o julgamento da imagem.
+        self.assertIn("VICTORY_MERGE_MASK", chaves)
+        self.assertIn("`VICTORY_MERGE_MASK`: o que fazem à memória persiste entre os blocos", plano.md(p))
+        sem = {**p, "alternaveis": [c for c in p["alternaveis"]
+                                    if c["chave"] not in conhecimento.IMAGEM_SO_ENTRE_EXECUCOES]}
+        self.assertNotIn("persiste entre os blocos", plano.md(sem))
 
     def test_chave_inerte_fica_fora(self):
         r = resumo()
