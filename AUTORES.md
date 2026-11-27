@@ -70,6 +70,7 @@ segue sob a GPL-3.0. Pessoas que escreveram código incluído neste repositório
 - Nostyxx
 - oddiums
 - Ortomanic
+- OtavMacedo
 - Pablo Barros
 - Pedro Fortunato
 - quaternion
