@@ -7,7 +7,10 @@
 //! session's folder and a line of `offline/manifesto.jsonl` says what
 //! failed and why. `victory translate <folder> --pipelines --list` then
 //! translates the same containers and makes pipelines on the real device:
-//! a fix to the translator is checked in seconds, with no run.
+//! a fix to the translator is checked in seconds, with no run. That check
+//! makes each graphics pipeline with a plain state of its own, so the
+//! manifest keeps the title's state of a refused one beside it: a refusal
+//! the plain state does not repeat is confirmed only by a run.
 //!
 //! The containers are the title's own data: they stay in the session's
 //! folder, outside the repository, like every other output of a run.
@@ -39,6 +42,11 @@ pub struct Failure<'a> {
     pub error: &'a str,
     /// For a refused pipeline, all of its shaders (`stage hash`, joined).
     pub pipeline: &'a str,
+    /// For a refused graphics pipeline, the title's state it was asked
+    /// with (blend, rasterizer, depth, inputs, target formats), as text:
+    /// what the offline check, which makes pipelines with a plain state
+    /// of its own, did not have. Empty otherwise.
+    pub state: &'a str,
 }
 
 #[derive(Default)]
@@ -56,13 +64,33 @@ pub fn on() -> bool {
     *ON.get_or_init(|| std::env::var_os("SPARK_OFFLINE").is_some_and(|v| v == "1"))
 }
 
-/// Records `failure` in the session's folder, if recording is on and a
-/// session is started. Errors writing are dropped: the run goes on.
+/// Whether `dir` may hold the title's containers: outside every source
+/// tree (`crate::policy`), where nothing of a title is ever written.
+fn may_hold(dir: &Path) -> bool {
+    crate::policy::ensure_outside_repo(dir).is_ok()
+}
+
+/// Records `failure` in the session's folder, if recording is on, a
+/// session is started and its folder is outside the source tree. Errors
+/// writing are dropped: the run goes on.
 pub fn record(failure: &Failure) {
     if !on() {
         return;
     }
     let Some(dir) = super::dir() else { return };
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let allowed = *ALLOWED.get_or_init(|| {
+        let allowed = may_hold(dir);
+        if !allowed {
+            tracing::warn!(
+                "SPARK_OFFLINE: the session's folder is inside the source tree; no container is kept (set SPARK_LOG_DIR outside it)"
+            );
+        }
+        allowed
+    });
+    if !allowed {
+        return;
+    }
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let state = state.get_or_insert_with(State::default);
     let _ = record_in(&dir.join("offline"), state, failure, &super::anonymise);
@@ -107,6 +135,7 @@ fn record_in(
         )
         .str("error", &anon(f.error))
         .str("pipeline", f.pipeline)
+        .str("state", &anon(f.state))
         .finish();
     let mut manifest = std::fs::OpenOptions::new()
         .create(true)
@@ -132,6 +161,7 @@ mod tests {
             container: b"synthetic container",
             error: "GFX10 code at 0x40: v_foo is not supported",
             pipeline: "",
+            state: "",
         };
         let anon = |s: &str| s.replace("v_foo", "v_bar");
         record_in(dir.path(), &mut state, &f, &anon).unwrap();
@@ -139,6 +169,7 @@ mod tests {
             kind: "refused",
             error: "E_INVALIDARG",
             pipeline: "vertex 8899aabbccddeeff + pixel 00112233aabbccdd",
+            state: "blend one zero, targets [28]",
             ..f
         };
         record_in(dir.path(), &mut state, &refused, &anon).unwrap();
@@ -157,9 +188,23 @@ mod tests {
         assert_eq!(lines.len(), 2, "{manifest}");
         assert_eq!(
             lines[0],
-            r#"{"kind":"untranslated","hash":"00112233aabbccdd","stage":"pixel","bytes":19,"file":"00112233aabbccdd.pixel.cdxil","error":"GFX10 code at 0x40: v_bar is not supported","pipeline":""}"#
+            r#"{"kind":"untranslated","hash":"00112233aabbccdd","stage":"pixel","bytes":19,"file":"00112233aabbccdd.pixel.cdxil","error":"GFX10 code at 0x40: v_bar is not supported","pipeline":"","state":""}"#
         );
         assert!(lines[1].contains(r#""kind":"refused""#), "{}", lines[1]);
+        assert!(
+            lines[1].ends_with(r#""state":"blend one zero, targets [28]"}"#),
+            "{}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn nothing_is_kept_inside_the_source_tree() {
+        assert!(!may_hold(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("logs/session/offline")
+        ));
+        let outside = tempfile::tempdir().unwrap();
+        assert!(may_hold(&outside.path().join("offline")));
     }
 
     #[test]
@@ -176,6 +221,7 @@ mod tests {
             container: b"x",
             error: "e",
             pipeline: "",
+            state: "",
         };
         record_in(dir.path(), &mut state, &f, &|s| s.to_owned()).unwrap();
         assert!(!dir.path().join("00112233aabbccdd.compute.cdxil").exists());

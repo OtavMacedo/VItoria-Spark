@@ -611,14 +611,16 @@ impl MeshState {
 }
 
 /// Leaves the shaders of a pipeline the host refused for `error` in the
-/// session's folder (`SPARK_OFFLINE=1`; nothing unless set).
-fn refused_offline(shaders: &[Arc<Shader>], error: &dyn std::fmt::Display) {
+/// session's folder (`SPARK_OFFLINE=1`; nothing unless set). `state`: the
+/// title's graphics state the pipeline was asked with
+/// ([`GraphicsState::describe`]), empty for a compute pipeline.
+fn refused_offline(shaders: &[Arc<Shader>], error: &dyn std::fmt::Display, state: &str) {
     if !victory_core::session::offline::on() {
         return;
     }
     let (pipeline, error) = (format!("{shaders:?}"), error.to_string());
     for shader in shaders {
-        shader.record_offline("refused", &error, &pipeline);
+        shader.record_offline("refused", &error, &pipeline, state);
     }
 }
 
@@ -832,7 +834,11 @@ impl HostPipeline {
             Ok(root) => root,
             Err(e) => {
                 tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host root signature refused");
-                refused_offline(shaders, &e);
+                refused_offline(
+                    shaders,
+                    &e,
+                    &g.map(GraphicsState::describe).unwrap_or_default(),
+                );
                 return None;
             }
         };
@@ -876,7 +882,7 @@ impl HostPipeline {
                         ?shaders,
                         "host pipeline refused"
                     );
-                    refused_offline(shaders, &e);
+                    refused_offline(shaders, &e, "");
                     host.log_messages();
                     return None;
                 }
@@ -962,7 +968,7 @@ impl HostPipeline {
             };
             let refused = |e: windows::core::Error| {
                 tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host mesh pipeline refused");
-                refused_offline(shaders, &e);
+                refused_offline(shaders, &e, &state);
                 host.log_messages();
             };
             let (pso, launch) = match launch_roots {
@@ -1115,7 +1121,7 @@ impl HostPipeline {
             Ok(pso) => pso,
             Err(e) => {
                 tracing::warn!(spark.kind = "pipeline_refused", error = %e, ?shaders, "host pipeline refused");
-                refused_offline(shaders, &e);
+                refused_offline(shaders, &e, &state);
                 host.log_messages();
                 return None;
             }

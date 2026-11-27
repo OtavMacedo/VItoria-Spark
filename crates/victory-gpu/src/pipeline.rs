@@ -179,7 +179,7 @@ impl Shader {
                             error = %e,
                             "shader does not translate; its pipelines' draws are dropped"
                         );
-                        self.record_offline("untranslated", e, "");
+                        self.record_offline("untranslated", e, "", "");
                     }
                 }
                 done.ok()
@@ -192,8 +192,9 @@ impl Shader {
 impl Shader {
     /// Leaves the container in the session's folder for a failure to be
     /// tried again without the title (`SPARK_OFFLINE=1`; nothing unless
-    /// set). `pipeline`: all the shaders of a refused pipeline.
-    pub(crate) fn record_offline(&self, kind: &str, error: &str, pipeline: &str) {
+    /// set). `pipeline`: all the shaders of a refused pipeline; `state`:
+    /// the graphics state it was asked with, as text.
+    pub(crate) fn record_offline(&self, kind: &str, error: &str, pipeline: &str, state: &str) {
         use victory_core::session::offline;
         if offline::on() {
             offline::record(&offline::Failure {
@@ -203,6 +204,7 @@ impl Shader {
                 container: &self.container,
                 error,
                 pipeline,
+                state,
             });
         }
     }
