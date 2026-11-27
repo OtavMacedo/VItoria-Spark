@@ -420,8 +420,9 @@ mod tests {
         assert_eq!(s.long_json(), "[]");
     }
 
-    /// The cost of a frame's sample: far below a thousandth of the
-    /// shortest frame (16 ms), so the phases are always on.
+    /// The cost of a frame's sample stays far below a thousandth of the
+    /// shortest frame (16 ms); what it costs a run is measured in a run
+    /// (`SPARK_AB=SPARK_PHASES`).
     #[test]
     fn a_frame_costs_microseconds() {
         let mut s = PhaseStats::default();

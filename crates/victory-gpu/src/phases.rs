@@ -5,7 +5,7 @@
 //! present their differences since the present before are that frame's
 //! parts. Sixteen atomic loads a frame, on the thread that presents:
 //! nothing is locked and nothing is written here. `SPARK_PHASES=0` leaves
-//! the frames without parts.
+//! the frames without parts and the write watch untimed (`crate::watch`).
 //!
 //! Work of the next frame is already under way on other threads when a
 //! frame is presented, so a part's time lands in the frame it ended in;
@@ -55,52 +55,66 @@ fn since(now: &FrameParts, then: &FrameParts) -> FrameParts {
     }
 }
 
-/// Whether frames are read part by part (`SPARK_PHASES=0`: no).
-fn on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("SPARK_PHASES").is_none_or(|v| v != "0"))
+/// Whether frames are read part by part (`SPARK_PHASES=0`: no). A switch
+/// of the table (`crate::switches`): it may alternate inside a run.
+pub(crate) fn on() -> bool {
+    crate::switches::PHASES.on()
 }
 
-/// The totals at the last present and at the last frame-rate line.
+/// `sum` with `parts` added, part by part.
+fn add(sum: &mut FrameParts, parts: &FrameParts) {
+    for (total, us) in sum.us.iter_mut().zip(parts.us) {
+        *total += us;
+    }
+    sum.copy_bytes += parts.copy_bytes;
+    sum.copy_back_bytes += parts.copy_back_bytes;
+    sum.watch_calls += parts.watch_calls;
+    sum.watch_pages += parts.watch_pages;
+}
+
+/// The totals at the last present, and the frames read since the last
+/// frame-rate line.
 pub(crate) struct Reader {
-    frame: FrameParts,
-    line: FrameParts,
-    /// Frames read since the last line.
+    /// `None` while the phases are off: the first frame after they come
+    /// on has no totals to be the difference of.
+    last: Option<FrameParts>,
+    /// The parts of the frames read since the last line, summed.
+    sum: FrameParts,
     frames: u32,
 }
 
 impl Reader {
     pub(crate) fn new() -> Reader {
-        let now = read();
         Reader {
-            frame: now,
-            line: now,
+            last: on().then(read),
+            sum: FrameParts::default(),
             frames: 0,
         }
     }
 
-    /// The parts of the frame that ends now; `None` with the phases off.
+    /// The parts of the frame that ends now; `None` with the phases off
+    /// and for the first frame after they come on.
     pub(crate) fn frame(&mut self) -> Option<FrameParts> {
         if !on() {
+            self.last = None;
             return None;
         }
         let now = read();
-        let parts = since(&now, &self.frame);
-        self.frame = now;
+        let parts = since(&now, &self.last.replace(now)?);
+        add(&mut self.sum, &parts);
         self.frames += 1;
         Some(parts)
     }
 
     /// The `frame_phases` event of `eventos.jsonl`: each part's mean over
-    /// the frames read since the last call, in ms a frame.
+    /// the frames read since the last call, in ms a frame. Nothing without
+    /// a frame read.
     pub(crate) fn line(&mut self) {
         let frames = f64::from(std::mem::take(&mut self.frames));
+        let parts = std::mem::take(&mut self.sum);
         if frames <= 0.0 {
             return;
         }
-        let now = read();
-        let parts = since(&now, &self.line);
-        self.line = now;
         let ms = |p: Phase| parts.us[p as usize] as f64 / 1e3 / frames;
         tracing::info!(
             spark.kind = "frame_phases",
@@ -141,13 +155,22 @@ mod tests {
     #[test]
     fn a_frame_is_the_difference_of_the_totals() {
         let mut reader = Reader::new();
+        if !on() {
+            assert!(reader.frame().is_none());
+            return;
+        }
         crate::framelog::add(T::RemapUs, 1500);
         crate::framelog::add(T::CopyBytes, 4096);
         let Some(parts) = reader.frame() else {
-            return;
+            panic!("a frame read with the phases on has parts");
         };
         // Other tests add to the same totals: at least what was added here.
         assert!(parts.us[Phase::Remap as usize] >= 1500);
         assert!(parts.copy_bytes >= 4096);
+        // The line's sum is of the frames read, not of the totals.
+        assert_eq!(reader.frames, 1);
+        assert_eq!(reader.sum.copy_bytes, parts.copy_bytes);
+        reader.line();
+        assert_eq!((reader.frames, reader.sum.copy_bytes), (0, 0));
     }
 }

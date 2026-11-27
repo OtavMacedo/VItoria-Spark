@@ -14,6 +14,10 @@ pub(crate) static CARD_SYNC_BATCH: Toggle = Toggle::flag("VICTORY_CARD_SYNC_BATC
 pub(crate) static COPY_PLAIN: Toggle = Toggle::flag("VICTORY_COPY_PLAIN");
 /// `VICTORY_MERGE_MASK` (`crate::card_mask`): the threshold, 0 off.
 pub(crate) static MERGE_MASK: Toggle = Toggle::new("VICTORY_MERGE_MASK", merge_mask);
+/// `SPARK_PHASES` (`crate::phases`): frames read part by part for the
+/// session log; `0` leaves them unread. In the table so that a run can
+/// measure what the reading itself costs.
+pub(crate) static PHASES: Toggle = Toggle::new("SPARK_PHASES", phases);
 /// `VICTORY_SKIP_WC_BACK` (`crate::census`). What was not copied back under
 /// the arm that skips stays so under the other: a run that alternates it
 /// measures time, not the image.
@@ -49,7 +53,8 @@ pub struct Entry {
     /// The switch.
     pub toggle: &'static Toggle,
     /// The frame part it changes: `copias`, `copia_de_volta`, `preparo`,
-    /// `texturas` or `gpu`.
+    /// `texturas` or `gpu`; `medicao` for a switch of the measuring
+    /// itself, which no plan made from a run's problems proposes.
     pub part: &'static str,
     /// Another variable, a test of its value (`None` unset), and why the
     /// switch does nothing when the test holds.
@@ -64,7 +69,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 12] = [
+pub static TABLE: [Entry; 13] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -103,6 +108,11 @@ pub static TABLE: [Entry; 12] = [
             uploads_on_copy_queue,
             "with bit 2 the changed bytes go up through the copy queue, which the masked upload does not use",
         )],
+    },
+    Entry {
+        toggle: &PHASES,
+        part: "medicao",
+        inert: &[],
     },
     Entry {
         toggle: &SKIP_WC_BACK,
@@ -175,6 +185,11 @@ fn merge_mask(value: Option<&str>) -> u64 {
     }
 }
 
+/// `SPARK_PHASES`: on (1) unless the value is `0`.
+fn phases(value: Option<&str>) -> u64 {
+    u64::from(value.is_none_or(|v| v.trim() != "0"))
+}
+
 /// `VICTORY_TEXTURE_ROOM_PERCENT`: 90 unless a number, kept in 50 to 97.
 fn texture_room_percent(value: Option<&str>) -> u64 {
     value
@@ -200,11 +215,21 @@ mod tests {
         assert_eq!(texture_room_percent(Some("94")), 94);
         assert_eq!(texture_room_percent(Some("10")), 50);
         assert_eq!(texture_room_percent(Some("100")), 97);
+        assert_eq!(phases(None), 1);
+        assert_eq!(phases(Some("0")), 0);
+        assert_eq!(phases(Some("1")), 1);
     }
 
     #[test]
     fn the_table_names_each_switch_once() {
-        let parts = ["copias", "copia_de_volta", "preparo", "texturas", "gpu"];
+        let parts = [
+            "copias",
+            "copia_de_volta",
+            "preparo",
+            "texturas",
+            "gpu",
+            "medicao",
+        ];
         assert!(TABLE.iter().all(|e| parts.contains(&e.part)));
         assert!(uploads_on_copy_queue(Some("3")) && !uploads_on_copy_queue(Some("1")));
         assert!(!uploads_on_copy_queue(None));
@@ -213,6 +238,10 @@ mod tests {
         let n = names.len();
         names.dedup();
         assert_eq!(names.len(), n);
-        assert!(names.iter().all(|n| n.starts_with("VICTORY_")));
+        assert!(
+            names
+                .iter()
+                .all(|n| n.starts_with("VICTORY_") || n.starts_with("SPARK_"))
+        );
     }
 }

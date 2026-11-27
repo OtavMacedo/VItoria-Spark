@@ -569,8 +569,9 @@ fn kernel_pages(j: &mut Journal, first: usize, last: usize, caller: Caller) -> O
         j.stats.pages[caller as usize] += count as u64;
     }
     let asked_pages = count as u64;
-    // Two clock readings beside a call that walks page tables.
-    let started = std::time::Instant::now();
+    // Timed only with the frame phases on: two clock readings beside a
+    // call that walks page tables.
+    let started = crate::phases::on().then(std::time::Instant::now);
     // SAFETY: the answer buffer holds `count` entries.
     let failed = unsafe {
         GetWriteWatch(
@@ -582,7 +583,7 @@ fn kernel_pages(j: &mut Journal, first: usize, last: usize, caller: Caller) -> O
             &mut granularity,
         )
     } != 0;
-    {
+    if let Some(started) = started {
         use crate::framelog::{T, add};
         add(T::WatchUs, started.elapsed().as_micros() as u64);
         add(T::WatchCalls, 1);
