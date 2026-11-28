@@ -1194,6 +1194,17 @@ fn log_memory() {
             given[5],
         );
     }
+    // What `crate::freed` let go, once it did anything.
+    if let Some(freed) = crate::freed::counts() {
+        tracing::info!(
+            "memory, copies of title memory given up let go at once (VICTORY_RELEASE_FREED): \
+             {} unmappings or mappings and {} releases seen; {} copies let go, {:.0} MB",
+            freed[0],
+            freed[1],
+            freed[2],
+            mb(freed[3]),
+        );
+    }
 }
 
 /// Microseconds since the first call.

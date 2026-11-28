@@ -99,6 +99,12 @@ pub(crate) static GUARD_REST: Toggle = Toggle::new("VICTORY_GUARD_REST", crate::
 /// faults four times in a frame is left open, 0 off. As above.
 pub(crate) static GUARD_HOT: Toggle = Toggle::new("VICTORY_GUARD_HOT", crate::watch::hot_frames);
 
+/// `VICTORY_RELEASE_FREED` (`crate::freed`): each unmapping, mapping or
+/// release of title memory decides on its own whether the copies there
+/// nothing holds go now; a copy let go under one arm is made again at its
+/// next use under either.
+pub(crate) static RELEASE_FREED: Toggle = Toggle::flag("VICTORY_RELEASE_FREED");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -122,7 +128,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 24] = [
+pub static TABLE: [Entry; 25] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -245,6 +251,11 @@ pub static TABLE: [Entry; 24] = [
     Entry {
         toggle: &LIST_REAPER,
         part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &RELEASE_FREED,
+        part: "copias",
         inert: &[],
     },
 ];
