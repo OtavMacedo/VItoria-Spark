@@ -2121,6 +2121,37 @@ mod barycentric_tests {
         let _ = shader;
     }
 
+    /// With `VICTORY_HDR_CLAMP=1` each float channel a pixel program writes to a colour
+    /// target is held to the console's HDR range (`Lower::clamp_hdr`): four channels are held,
+    /// the program is another, longer one, the same at each translation, and valid. Unset, the
+    /// translation is the one from before.
+    #[test]
+    fn a_pixel_colour_output_is_held_to_the_consoles_hdr_range() {
+        let [e0, e1] = exp_mrt0(2);
+        let words = [v_add_f32(2, 0, 1), e0, e1, 0xBF81_0000];
+        let translated = |on: Option<bool>| {
+            let was = lower::hdr::TEST_HDR_CLAMP.replace(on);
+            let held = lower::hdr::TEST_HDR_HELD.replace(0);
+            let shader = pixel(&words, PERSP_CENTER);
+            lower::hdr::TEST_HDR_CLAMP.set(was);
+            let n = lower::hdr::TEST_HDR_HELD.replace(held);
+            (shader.expect("the pixel program translates"), n)
+        };
+        let ((held, n_held), (plain, n_plain)) = (translated(Some(true)), translated(Some(false)));
+        assert_eq!((n_held, n_plain), (4, 0), "one clamp per colour channel");
+        assert!(
+            held.dxil.len() > plain.dxil.len(),
+            "the clamp added nothing"
+        );
+        assert_eq!(translated(Some(true)).0.dxil, held.dxil);
+        validate(&held);
+        validate(&plain);
+        if std::env::var_os("VICTORY_HDR_CLAMP").is_none() {
+            assert_eq!(translated(None).0.dxil, plain.dxil, "off by default");
+        }
+        assert_eq!(lower::hdr::HDR_MAX, 65024.0);
+    }
+
     /// Custom interpolation reads I and J (v0, v1 with PERSP_CENTER) as
     /// plain floats: they are channels y and z of `SV_Barycentrics`, the
     /// weights of vertices 1 and 2.
