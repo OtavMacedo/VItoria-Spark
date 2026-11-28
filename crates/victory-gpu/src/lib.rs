@@ -75,6 +75,8 @@ mod host;
 mod indirect;
 #[cfg(windows)]
 mod inplace;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod land;
 mod launch;
 pub mod list;
 #[cfg(windows)]

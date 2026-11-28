@@ -148,6 +148,7 @@ impl Meter {
         }
         crate::shadow::back_line(frames);
         crate::shadow::wide_line(frames);
+        crate::land::line(frames);
         crate::shadow::looks_line(frames);
         {
             let [passes, pieces, compares] =

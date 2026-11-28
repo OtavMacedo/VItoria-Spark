@@ -470,6 +470,48 @@ pub(crate) fn views_between(start: usize, end: usize) -> Vec<(usize, usize)> {
     out
 }
 
+/// For `crate::land`: per range of title memory (address, bytes), keys
+/// that two ranges share whenever they may hold the same bytes: one for
+/// each 64 KiB block of addresses it touches, and one for each 64 KiB of a
+/// section that a title view shows in it ([`keys_in`]).
+pub(crate) fn physical_keys(ranges: &[(usize, usize)]) -> Vec<Vec<(usize, u64)>> {
+    let v = views();
+    ranges
+        .iter()
+        .map(|&(at, len)| keys_in(&v.views, at, len))
+        .collect()
+}
+
+/// [`physical_keys`] of one range, with the title views `views`: `(0,
+/// block)` for each 64 KiB block of addresses (a section's handle is never
+/// 0), then `(section, n)` for the `n`th 64 KiB of a section shown there.
+/// A view need not begin on a 64 KiB line of its section: what it shows of
+/// a block may then lie in two of those.
+fn keys_in(
+    views: &BTreeMap<usize, (usize, usize, u64)>,
+    at: usize,
+    len: usize,
+) -> Vec<(usize, u64)> {
+    let end = at.saturating_add(len.max(1));
+    let mut keys: Vec<(usize, u64)> = (at / K64..end.div_ceil(K64))
+        .map(|block| (0, block as u64))
+        .collect();
+    let first = views
+        .range(..=at)
+        .next_back()
+        .filter(|(base, view)| *base + view.0 > at);
+    let rest = views.range(at.saturating_add(1)..end);
+    for (&base, &(bytes, section, offset)) in first.into_iter().chain(rest) {
+        let (lo, hi) = (base.max(at), (base + bytes).min(end));
+        if lo >= hi {
+            continue;
+        }
+        let (from, to) = (offset + (lo - base) as u64, offset + (hi - base) as u64);
+        keys.extend((from / K64 as u64..to.div_ceil(K64 as u64)).map(|n| (section, n)));
+    }
+    keys
+}
+
 /// The address of the 64 KiB page shown at `page` in every title view that
 /// shows it, `page`'s own address included; empty if `page` is not a view.
 pub(crate) fn pages_of(page: usize) -> Vec<usize> {
@@ -1628,6 +1670,39 @@ pub(crate) fn tick() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `crate::land`'s keys: ranges in one block of addresses meet, and so
+    /// do ranges at two addresses that show the same 64 KiB of a section,
+    /// also from a view that begins off the section's 64 KiB lines; private
+    /// memory has the blocks' keys alone.
+    #[test]
+    fn keys_meet_where_views_show_the_same_pages() {
+        let mut views = BTreeMap::new();
+        let (a, b) = (0x7_0000_0000usize, 0x7_1000_0000usize);
+        // Three blocks of section 7 from 32 KiB into it; then the section's
+        // second 64 KiB again, at another address.
+        views.insert(a, (3 * K64, 7, 0x8000));
+        views.insert(b, (K64, 7, 0x1_0000));
+        let meet = |x: &[(usize, u64)], y: &[(usize, u64)]| x.iter().any(|k| y.contains(k));
+        let first = keys_in(&views, a + K64 + 0x100, 0x100);
+        assert_eq!(first, vec![(0, (a / K64 + 1) as u64), (7, 1)]);
+        let again = keys_in(&views, b + 0x7f00, 0x10);
+        assert_eq!(again, vec![(0, (b / K64) as u64), (7, 1)]);
+        assert!(meet(&first, &again));
+        // The view's first block shows the section's first 64 KiB and the
+        // start of the second.
+        assert_eq!(
+            keys_in(&views, a, K64),
+            vec![(0, (a / K64) as u64), (7, 0), (7, 1)]
+        );
+        assert!(!meet(&keys_in(&views, a, 0x100), &again));
+        let private = 0x5_0000_0000usize;
+        assert_eq!(
+            keys_in(&views, private + K64 - 1, 2),
+            vec![(0, (private / K64) as u64), (0, (private / K64 + 1) as u64)]
+        );
+        assert_eq!(keys_in(&BTreeMap::new(), a, 1), vec![(0, (a / K64) as u64)]);
+    }
 
     /// Views as the runtime tells them: a range inside one view, or over
     /// views that continue each other in one section, is one run; over

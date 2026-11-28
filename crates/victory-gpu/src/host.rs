@@ -6461,18 +6461,19 @@ impl Host {
                 }
             }
         }
-        let mut title = Vec::new();
-        let mut written = 0;
-        for (shadow, lo, hi, at) in &pieces {
-            // SAFETY: the mapping of the fetched bytes, `total` of them;
-            // the copy into it has run.
-            let gpu =
-                unsafe { std::slice::from_raw_parts((data + *at as usize) as *const u8, hi - lo) };
-            let merged = shadow.card_merge_relay(*lo, gpu, after, &mut title);
-            shadow.walls_merged(gpu.len(), merged);
-            written += merged;
-        }
-        copy_back(1, written as u64);
+        let land: Vec<_> = pieces
+            .iter()
+            .map(|(copy, lo, hi, at)| crate::land::Piece {
+                copy,
+                lo: *lo,
+                hi: *hi,
+                bytes: data + *at as usize,
+                after,
+            })
+            .collect();
+        // SAFETY: the mapping of the fetched bytes, `total` of them; the
+        // copy into it has run.
+        copy_back(1, unsafe { crate::land::card(&land, true) } as u64);
         // Sends up to `after` are of no use to any later merge; with the
         // fetch inside flights only those up to these plans' are
         // (`fallback_fetched_mark`).
@@ -6613,17 +6614,25 @@ impl Host {
         }
         // Outside the lock: no slot of these plans is written over before
         // their tickets are landed (`inflight_tickets_landed`, after this).
-        let mut title = Vec::new();
-        let (mut written, mut bytes) = (0, 0u64);
-        for (shadow, lo, hi, at, after) in &pieces {
-            // SAFETY: inside the mapping of the slots (checked above); the
-            // copy into it ran in the plan's flight, which the card has run.
-            let gpu = unsafe { std::slice::from_raw_parts(*at as *const u8, hi - lo) };
-            written += shadow.card_merge_relay(*lo, gpu, *after, &mut title);
-            let landed = gpu.len() as u64;
-            bytes += landed;
-            crate::census::fetched(shadow.title_start(), landed);
-        }
+        let mut bytes = 0u64;
+        let land: Vec<_> = pieces
+            .iter()
+            .map(|(copy, lo, hi, at, after)| {
+                bytes += (hi - lo) as u64;
+                crate::census::fetched(copy.title_start(), (hi - lo) as u64);
+                let (lo, hi, after) = (*lo, *hi, *after);
+                crate::land::Piece {
+                    copy,
+                    lo,
+                    hi,
+                    bytes: *at,
+                    after,
+                }
+            })
+            .collect();
+        // SAFETY: inside the mapping of the slots (checked above); the copy
+        // into it ran in the plan's flight, which the card has run.
+        let written = unsafe { crate::land::card(&land, false) };
         for plan in plans {
             for r in &plan.ranges {
                 crate::shadow::CARD_STATS[2].fetch_add(u64::from(r.span.pieces), Ordering::Relaxed);

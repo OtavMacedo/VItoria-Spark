@@ -58,6 +58,13 @@ pub(crate) struct Shadow {
     /// GPU wrote differs. Room for the whole copy; only those ranges' bytes
     /// are set (and read).
     before: Mutex<Option<Vec<u8>>>,
+    /// For a copy in the card's memory: held shared while pieces of it are
+    /// landed on several threads (`crate::land`, each piece its own bytes),
+    /// and alone, ahead of `before`'s lock, while title bytes go in under
+    /// shader writes ([`Shadow::merge_under_writes`]), which such landings
+    /// must not see half done. The landing one piece after the other keeps
+    /// out the same by `before`'s lock.
+    merging: std::sync::RwLock<()>,
     /// With snapshots kept ([`keeps`]): which 64 KiB pieces of the snapshot
     /// hold the copy's bytes as they are now, and whether the snapshot is
     /// counted in [`KEPT_BYTES`].
@@ -1951,6 +1958,7 @@ fn workers() -> &'static Workers {
                 .name(format!("victory-wide-{i}"))
                 .spawn(move || {
                     crate::framelog::raise_helper("victory-wide");
+                    KEPT_THREAD.set(true);
                     let workers = WORKERS.get().expect("made above");
                     loop {
                         let job = {
@@ -2178,6 +2186,126 @@ fn wide(jobs: Vec<Job>) {
 /// refreshes, the merge of what shaders wrote to card copies).
 pub(crate) fn wide_run(jobs: Vec<Box<dyn FnOnce() + Send>>) {
     wide(jobs);
+}
+
+thread_local! {
+    /// Whether this thread is one of those kept for [`wide`].
+    static KEPT_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Calls `f` with every number below `count`, on this thread and on the
+/// kept threads of [`wide`] that are free (as many as work now, one less
+/// than `count` at most), and returns when every call has. A panic in `f`
+/// comes back here.
+///
+/// Unlike [`wide`], this thread takes no job of anyone else's meanwhile,
+/// and the calls run on kept threads and this one only: the words put on
+/// the queue for the kept threads do nothing where another caller of
+/// [`wide`] takes them while it waits (that thread may hold locks the
+/// calls take; `crate::land`'s take the copies' locks), nor once the
+/// numbers are all taken, so nothing waits for a kept thread that is busy
+/// elsewhere. The words hold nothing of the calls' own.
+pub(crate) fn wide_each(count: usize, f: &(dyn Fn(usize) + Sync)) {
+    if count < 2 {
+        (0..count).for_each(f);
+        return;
+    }
+    let workers = workers();
+    let working = working_now(workers.kept);
+    let helpers = (count - 1).min(working);
+    // SAFETY: the lifetime is left out only until this call returns, which
+    // is not before no helper is inside `f` and none can enter.
+    let work = UnderWork(unsafe {
+        std::mem::transmute::<
+            *const (dyn Fn(usize) + Sync + '_),
+            *const (dyn Fn(usize) + Sync + 'static),
+        >(f)
+    });
+    let shared = Arc::new(Each {
+        state: Mutex::new(UnderState {
+            work: Some(work),
+            next: 0,
+            count,
+            running: 0,
+            panicked: false,
+        }),
+        idle: std::sync::Condvar::new(),
+    });
+    let changed = {
+        let mut queue = workers.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = workers.working.swap(working, Ordering::Relaxed) != working;
+        for _ in 0..helpers {
+            let shared = shared.clone();
+            queue.push_back(Box::new(move || {
+                if KEPT_THREAD.get() {
+                    shared.help();
+                }
+            }));
+        }
+        changed
+    };
+    wide_wakes::count(count, if changed { working } else { helpers }, working);
+    if changed {
+        workers.parked.notify_all();
+        workers.more.notify_all();
+    } else if helpers >= working {
+        workers.more.notify_all();
+    } else {
+        for _ in 0..helpers {
+            workers.more.notify_one();
+        }
+    }
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        loop {
+            // (Taken in a statement of its own, so that the lock is
+            // released before `f` runs.)
+            let next = shared.state().take();
+            let Some((_, i)) = next else { break };
+            f(i);
+        }
+    }));
+    let mut state = shared.state();
+    state.work = None;
+    while state.running > 0 {
+        state = shared.idle.wait(state).unwrap_or_else(|e| e.into_inner());
+    }
+    let panicked = state.panicked;
+    drop(state);
+    if let Err(panic) = ran {
+        std::panic::resume_unwind(panic);
+    }
+    assert!(!panicked, "a call of wide_each on a kept thread panicked");
+}
+
+/// What a call of [`wide_each`] shares with the words it puts on the queue.
+struct Each {
+    state: Mutex<UnderState>,
+    idle: std::sync::Condvar,
+}
+
+impl Each {
+    fn state(&self) -> std::sync::MutexGuard<'_, UnderState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// On a kept thread: numbers of the call while there are any.
+    fn help(&self) {
+        let mut state = self.state();
+        while let Some((work, i)) = state.take() {
+            state.running += 1;
+            drop(state);
+            // SAFETY: counted in `running` under the lock it was taken
+            // under, so `wide_each` has not returned and `f` is alive.
+            let ran =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { (*work.0)(i) }));
+            state = self.state();
+            state.running -= 1;
+            state.panicked |= ran.is_err();
+            if state.running == 0 {
+                self.idle.notify_all();
+            }
+        }
+    }
 }
 
 /// Threads kept for the pages [`Shadow::merge_under_writes`] compares with
@@ -2584,11 +2712,108 @@ pub(crate) fn back_line(frames: f64) {
 #[cfg(test)]
 mod wide_tests {
     use super::{
-        Job, PIECE, Under, WIDE_JOB, copy_jobs, find_pieces, parse_under_threads, wide,
-        wide_forced, woken_for,
+        Job, KEPT_THREAD, PIECE, Under, WIDE_JOB, copy_jobs, find_pieces, parse_under_threads,
+        wide, wide_each, wide_forced, woken_for,
     };
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// [`wide_each`] calls its closure, which borrows from the caller, once
+    /// with every number, on the caller's thread or a kept one only, from
+    /// threads that ask at once while others hand out jobs of their own
+    /// (which take the words it puts on the queue, and must leave them),
+    /// and returns only when every call has.
+    #[test]
+    fn wide_each_calls_each_number_once_on_kept_threads_before_it_returns() {
+        let ask = |n: usize| {
+            let me = std::thread::current().id();
+            let calls: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
+            let elsewhere = AtomicBool::new(false);
+            wide_each(n, &|i| {
+                if !KEPT_THREAD.get() && std::thread::current().id() != me {
+                    elsewhere.store(true, Ordering::Relaxed);
+                }
+                calls[i].fetch_add(1, Ordering::Relaxed);
+            });
+            assert!(
+                calls.iter().all(|c| c.load(Ordering::Relaxed) == 1),
+                "{n} numbers"
+            );
+            assert!(!elsewhere.load(Ordering::Relaxed), "{n} numbers");
+        };
+        for working in [Some(1), Some(2), None, Some(64)] {
+            wide_forced::set_working(working);
+            for n in [0usize, 1, 2, 3, 7, 300, 5000] {
+                ask(n);
+            }
+        }
+        wide_forced::set_working(None);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let jobs: Vec<Job> = (0..8)
+                        .map(|_| Box::new(std::thread::yield_now) as Job)
+                        .collect();
+                    wide(jobs);
+                }
+            });
+            let askers: Vec<_> = (0..4)
+                .map(|_| s.spawn(|| (0..60).for_each(|k| ask(k * 7))))
+                .collect();
+            let asked: Vec<_> = askers.into_iter().map(|a| a.join()).collect();
+            // (Before any panic comes back: the scope waits for the thread
+            // that hands out jobs.)
+            stop.store(true, Ordering::Relaxed);
+            assert!(asked.iter().all(Result::is_ok), "an asker panicked");
+        });
+    }
+
+    /// A kept thread takes numbers of a [`wide_each`] call: of two calls
+    /// that need each other at once, both run at once (with up to two
+    /// seconds' wait each try).
+    #[test]
+    fn wide_each_has_kept_threads_take_numbers() {
+        let mut met = 0;
+        for _ in 0..20 {
+            let (started, both) = (AtomicBool::new(false), AtomicBool::new(false));
+            wide_each(2, &|i| {
+                if i == 1 {
+                    started.store(true, Ordering::Relaxed);
+                    return;
+                }
+                let waiting = std::time::Instant::now();
+                while !started.load(Ordering::Relaxed)
+                    && waiting.elapsed() < std::time::Duration::from_secs(2)
+                {
+                    std::thread::yield_now();
+                }
+                both.store(started.load(Ordering::Relaxed), Ordering::Relaxed);
+            });
+            met += usize::from(both.load(Ordering::Relaxed));
+        }
+        assert!(met > 0, "no kept thread took a number");
+    }
+
+    /// A panic in a call comes back to the caller, from its own thread or a
+    /// kept one, and the kept threads keep working afterwards.
+    #[test]
+    fn wide_each_brings_a_panic_back() {
+        for bad in [0usize, 5, 63] {
+            let ran = std::panic::catch_unwind(|| {
+                wide_each(64, &|i| {
+                    assert!(i != bad, "number {i}");
+                    std::thread::yield_now();
+                });
+            });
+            assert!(ran.is_err(), "number {bad}");
+            let calls = AtomicUsize::new(0);
+            wide_each(64, &|_| {
+                calls.fetch_add(1, Ordering::Relaxed);
+            });
+            assert_eq!(calls.load(Ordering::Relaxed), 64);
+        }
+    }
 
     /// [`Under::each`] calls its closure, which borrows from the caller,
     /// once with every number, from threads that ask one after the other
@@ -4564,6 +4789,7 @@ impl Shadow {
             pending: looks::Pending::default(),
             flights: Mutex::default(),
             before: Mutex::default(),
+            merging: std::sync::RwLock::default(),
             kept: Mutex::default(),
             used: AtomicU64::new(crate::host::moment()),
             asked: [AtomicU64::new(u64::MAX), AtomicU64::new(0)],
@@ -5429,7 +5655,9 @@ impl Shadow {
                 // puts what the card wrote into title memory and into the
                 // reference under the same lock, and a page read before
                 // such a merge and compared after it would take the card's
-                // bytes for the title's.
+                // bytes for the title's. Landings on several threads
+                // (`crate::land`) are kept out by the other lock.
+                let merging = self.merging_alone();
                 let mut before = self.before.lock().unwrap_or_else(|e| e.into_inner());
                 // A page that is not there is left as it is, and looked at
                 // again next time.
@@ -5470,6 +5698,7 @@ impl Shadow {
                     }
                 }
                 drop(before);
+                drop(merging);
                 // Taken, if the range holds all of the page that is in the
                 // copy; else the rest of it is the refresh's, which notes
                 // only whole pages, and the page is looked at again.
@@ -5502,6 +5731,7 @@ impl Shadow {
     ) -> bool {
         let (start, end) = (self.start as usize, (self.start + self.len) as usize);
         let base = start / PAGE;
+        let merging = self.merging_alone();
         let mut before = self.before.lock().unwrap_or_else(|e| e.into_inner());
         let held = if self.card.is_some() {
             self.data as usize
@@ -5550,6 +5780,7 @@ impl Shadow {
             }
         }
         drop(before);
+        drop(merging);
         let mut copied = self.copied.write();
         for page in taken {
             if let Some(at) = copied.get_mut(page - base) {
@@ -6266,7 +6497,6 @@ impl Shadow {
         fetched_after: u64,
         title: &mut Vec<u8>,
     ) -> usize {
-        let start = self.start as usize;
         let Some(card) = &self.card else {
             return 0;
         };
@@ -6274,10 +6504,58 @@ impl Shadow {
             return 0;
         }
         let _side = self.before.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: inside the mapping (checked above). The offsets are in a
-        // range declared and not done with, which no refresh writes; what
-        // does write it (the title's bytes put in under shader writes)
-        // holds the lock held here.
+        self.card_merge_relay_held(card, at, gpu, fetched_after, title)
+    }
+
+    /// [`Shadow::card_merge_relay`] beside landings of other pieces of the
+    /// same copy on other threads (`crate::land`): under the shared lock
+    /// that keeps the title's bytes going in under shader writes out
+    /// ([`Shadow::merge_under_writes`] takes it alone), instead of the
+    /// CPU side's lock, which would let one piece of the copy land at a
+    /// time. The caller gives no two calls at once the same bytes of the
+    /// copy or of title memory.
+    pub(crate) fn card_merge_relay_beside(
+        &self,
+        at: usize,
+        gpu: &[u8],
+        fetched_after: u64,
+        title: &mut Vec<u8>,
+    ) -> usize {
+        let Some(card) = &self.card else {
+            return 0;
+        };
+        if at + gpu.len() > self.len as usize {
+            return 0;
+        }
+        let _merging = self.merging.read().unwrap_or_else(|e| e.into_inner());
+        self.card_merge_relay_held(card, at, gpu, fetched_after, title)
+    }
+
+    /// [`Shadow::merge_under_writes`]'s side of [`Shadow::merging`]: for a
+    /// copy in the card's memory, held alone; nothing for the others.
+    fn merging_alone(&self) -> Option<std::sync::RwLockWriteGuard<'_, ()>> {
+        self.card
+            .is_some()
+            .then(|| self.merging.write().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// The body of [`Shadow::card_merge_relay`], with title bytes going in
+    /// under shader writes kept out by the caller (one lock or the other)
+    /// and `[at, at + gpu.len())` inside the copy.
+    fn card_merge_relay_held(
+        &self,
+        card: &Card,
+        at: usize,
+        gpu: &[u8],
+        fetched_after: u64,
+        title: &mut Vec<u8>,
+    ) -> usize {
+        let start = self.start as usize;
+        // SAFETY: inside the mapping (checked by the callers). The offsets
+        // are in a range declared and not done with, which no refresh
+        // writes; what does write it (the title's bytes put in under
+        // shader writes) is kept out by the caller's lock, and no other
+        // landing is given the same bytes.
         let held = unsafe { std::slice::from_raw_parts_mut(self.data.add(at), gpu.len()) };
         let Some(first) = first_difference(gpu, held) else {
             return 0;
