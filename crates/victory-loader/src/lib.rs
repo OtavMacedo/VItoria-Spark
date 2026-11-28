@@ -38,6 +38,7 @@ mod thunks;
 mod tls;
 #[cfg(windows)]
 mod windows;
+pub mod working_set;
 
 #[cfg(all(windows, feature = "diagnostics"))]
 pub use crash::save_on_crash;
