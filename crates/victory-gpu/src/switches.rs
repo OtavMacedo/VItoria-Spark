@@ -46,6 +46,10 @@ pub(crate) static HEAP_LOCKS: Toggle = Toggle::flag("VICTORY_HEAP_LOCKS");
 /// `VICTORY_ASYNC_PRESENT` (`crate::queue`).
 pub(crate) static ASYNC_PRESENT: Toggle = Toggle::flag("VICTORY_ASYNC_PRESENT");
 
+/// `VICTORY_BIND_CACHE` (`crate::bind_cache`; what it remembers goes at
+/// the first call with it off).
+pub(crate) static BIND_CACHE: Toggle = Toggle::flag("VICTORY_BIND_CACHE");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -69,9 +73,14 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 13] = [
+pub static TABLE: [Entry; 14] = [
     Entry {
         toggle: &ASYNC_PRESENT,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &BIND_CACHE,
         part: "preparo",
         inert: &[],
     },
