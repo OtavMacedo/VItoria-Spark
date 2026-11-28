@@ -29,7 +29,7 @@
 //!
 //! `VICTORY_GPU_DETILE_VERIFY=<n>`: up to `n` uploads a second are read back
 //! and compared with the CPU's detile of the same bytes; a difference is
-//! logged with the texture.
+//! logged with the texture. `VICTORY_GPU_DETILE_TRIM=1`: see [`trim`].
 //!
 //! The switch is read once (the rings are made with the first texture), so
 //! it cannot alternate inside a run.
@@ -490,6 +490,12 @@ struct State {
     checks: Vec<Check>,
     /// The second a check was last taken in, and how many in it.
     checked: (u64, u64),
+    /// With [`trim`]: the rings' full sizes (raw, card), when an upload
+    /// last wanted more than the small rings give, and when a resize was
+    /// last tried (milliseconds, `crate::host::now_ms`).
+    full: (u64, u64),
+    busy_ms: u64,
+    tried_ms: u64,
 }
 
 // SAFETY: D3D12 objects (free-threaded) and persistent mappings, used only
@@ -625,6 +631,9 @@ fn make() -> windows::core::Result<State> {
         lists: Vec::new(),
         checks: Vec::new(),
         checked: (0, 0),
+        full: (raw_size, out_size),
+        busy_ms: crate::host::now_ms(),
+        tried_ms: 0,
     })
 }
 
@@ -657,6 +666,101 @@ fn make_rings(
     };
     crate::host::name(&out, || "detile: detiled textures".into());
     Ok((raw, raw_data as usize, out, out_size))
+}
+
+/// `VICTORY_GPU_DETILE_TRIM=1` (off by default): the rings shrink to
+/// `VICTORY_GPU_DETILE_SMALL_MB` each (64) once no upload has wanted more
+/// than that for `VICTORY_GPU_DETILE_TRIM_S` seconds (20), and grow back to
+/// their full sizes when one does (an upload of more than a quarter of the
+/// small rings, rings filled past half of them, or an upload refused for
+/// room). Outside loading bursts the rings hold a few MB, and both take the
+/// process's commit (the card's one its memory too) for the whole run. A
+/// resize is made only when both rings hold nothing reserved and nothing
+/// the card may still read, and the old rings are retired behind the
+/// submissions still running; an upload the rings cannot take meanwhile is
+/// detiled on the CPU, as every refused one is. The seconds, and the small
+/// size in bytes.
+fn trim() -> Option<(u64, u64)> {
+    static T: OnceLock<Option<(u64, u64)>> = OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var_os("VICTORY_GPU_DETILE_TRIM")
+            .is_some_and(|v| v == "1")
+            .then(|| {
+                let secs = std::env::var("VICTORY_GPU_DETILE_TRIM_S")
+                    .ok()
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(20u64)
+                    .clamp(2, 3600);
+                (secs, mb("VICTORY_GPU_DETILE_SMALL_MB", 64, 32, 1024))
+            })
+    })
+}
+
+/// Since the start: the rings shrunk, and grown back ([`trim`]).
+pub(crate) static RESIZES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// With [`trim`], at a submission that detiles nothing: the rings are made
+/// the size they should be now, if they hold nothing.
+fn fit(state: &mut State, completed: u64) {
+    let Some((secs, small)) = trim() else {
+        return;
+    };
+    let now = crate::host::now_ms();
+    let small = (small.min(state.full.0), small.min(state.full.1));
+    let want = if now.saturating_sub(state.busy_ms) < secs * 1000 {
+        state.full
+    } else {
+        small
+    };
+    let have = (state.raw_arena.size(), state.out_arena.size());
+    if (have.0 == want.0 / GRAIN * GRAIN && have.1 == want.1 / GRAIN * GRAIN)
+        || now < state.tried_ms + 1000
+    {
+        return;
+    }
+    state.raw_arena.reclaim(completed);
+    state.out_arena.reclaim(completed);
+    // Nothing reserved means no list holds an upload: a list holds its
+    // uploads until it is reset, so none submitted again can read a ring.
+    let quiet = state.raw_arena.used() == 0
+        && state.out_arena.used() == 0
+        && state.jobs.is_empty()
+        && state.filled.is_empty()
+        && state.checks.is_empty()
+        && state.lists.iter().all(|l| l.2 <= completed);
+    if !quiet {
+        return;
+    }
+    state.tried_ms = now;
+    let grow = want.0 > have.0 || want.1 > have.1;
+    match make_rings(want.0, want.1) {
+        Ok((raw, raw_data, out, out_size)) => {
+            // SAFETY: live buffers.
+            let (raw_gpu, out_gpu) =
+                unsafe { (raw.GetGPUVirtualAddress(), out.GetGPUVirtualAddress()) };
+            let old_raw = std::mem::replace(&mut state.raw, (raw, raw_data, raw_gpu));
+            let old_out = std::mem::replace(&mut state.out, (out, out_gpu));
+            state.raw_arena = Arena::new(want.0);
+            state.out_arena = Arena::new(out_size);
+            if grow && out_size < want.1 {
+                // The card had no room for the whole ring: tried again in
+                // ten seconds; the full size stays what was asked.
+                state.tried_ms = now + 9_000;
+            }
+            crate::host::retire((old_raw.0, old_out.0));
+            RESIZES[usize::from(grow)].fetch_add(1, Relaxed);
+            tracing::info!(
+                raw_mb = want.0 >> 20,
+                card_mb = out_size >> 20,
+                "gpu detile: rings {}",
+                if grow { "grown back" } else { "shrunk" }
+            );
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "gpu detile: the rings could not be resized (kept as they are)"
+        ),
+    }
 }
 
 /// The ring the detiled textures are in: the source of the lists' copies.
@@ -749,6 +853,14 @@ pub(crate) fn reserve(
     let completed = crate::host::host().map_or(0, |h| h.completed());
     let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let state = guard.as_mut().ok_or(Why::NotReady)?;
+    if let Some((_, small)) = trim() {
+        // A burst: the full rings are wanted.
+        if raw_len.max(out_len) > small / 4
+            || state.raw_arena.used().max(state.out_arena.used()) > small / 2
+        {
+            state.busy_ms = crate::host::now_ms();
+        }
+    }
     if raw_len > state.raw_arena.size()
         || out_len > state.out_arena.size()
         || raw_len > u64::from(u32::MAX)
@@ -764,6 +876,9 @@ pub(crate) fn reserve(
     state.raw_arena.reclaim(completed);
     state.out_arena.reclaim(completed);
     let taken = take_slices(&mut state.raw_arena, &mut state.out_arena, raw_len, out_len);
+    if taken.is_err() && trim().is_some() {
+        state.busy_ms = crate::host::now_ms();
+    }
     let (raw, out) = taken?;
     drop(guard);
     Ok(Arc::new(Upload {
@@ -921,7 +1036,7 @@ pub(crate) fn fill(upload: &Arc<Upload>, raw: &[u8], held: u32, expected: Option
     };
     let n = raw.len().min(upload.raw.1 as usize);
     // SAFETY: inside the raw ring's mapping (the slice was reserved for
-    // `raw.1` bytes, and the rings live for the run); no
+    // `raw.1` bytes, and the ring is not resized while an upload lives); no
     // submission that reads the slice is running (the caller checked).
     unsafe {
         std::ptr::copy_nonoverlapping(
@@ -980,6 +1095,7 @@ pub(crate) fn pre_list() -> Option<ID3D12CommandList> {
     let state = guard.as_mut()?;
     land_checks(state, completed);
     if state.jobs.is_empty() {
+        fit(state, completed);
         return None;
     }
     let jobs = std::mem::take(&mut state.jobs);
@@ -1029,8 +1145,8 @@ pub(crate) fn pre_list() -> Option<ID3D12CommandList> {
         D3D12_RESOURCE_STATE_COPY_SOURCE,
     );
     // SAFETY: the allocator's last list has run (its fence value is
-    // passed); live buffers (the rings and the table buffer live for the
-    // run); every job's offsets were checked
+    // passed); live buffers (the rings are not resized while jobs wait, and
+    // the table buffer lives for the run); every job's offsets were checked
     // against its slices when the upload was reserved.
     let recorded = unsafe {
         (|| -> windows::core::Result<()> {
@@ -1170,12 +1286,14 @@ fn status() {
         });
     tracing::info!(
         "gpu detile: {} uploads ({} MB of title memory), {} dispatches; rings in use {raw} of {raw_size} MB raw, \
-         {out} of {out_size} MB card; to the CPU: not ready {}, unaligned {}, no table {}, \
+         {out} of {out_size} MB card (shrunk {}, grown {}); to the CPU: not ready {}, unaligned {}, no table {}, \
          tables full {}, bounds {}, too big {}, raw ring full {}, card ring full {}; reused in use {}; \
          verify: {} checked, {} differed",
         s(DONE),
         s(DONE_BYTES) >> 20,
         s(DISPATCHES),
+        RESIZES[0].load(Relaxed),
+        RESIZES[1].load(Relaxed),
         s(WHY_AT),
         s(WHY_AT + 1),
         s(WHY_AT + 2),
