@@ -60,10 +60,13 @@ enum Held {
     Running,
     /// With [`present_behind`]: the title's present of a frame, due after
     /// what the queue holds before it: the host texture shown, the state
-    /// the title's lists leave it in, and the frame's number.
+    /// the title's lists leave it in, the second plane and its state if
+    /// one is blended over the first (`crate::compose`), and the frame's
+    /// number.
     Present(
         windows::Win32::Graphics::Direct3D12::ID3D12Resource,
         u32,
+        Option<(windows::Win32::Graphics::Direct3D12::ID3D12Resource, u32)>,
         u64,
     ),
 }
@@ -150,15 +153,61 @@ fn send_behind(this: This, planes: u32, plane_parameters: *const Plane) -> bool 
         .map_or(COPY_SOURCE, |(_, before)| before);
     crate::resource::host_transition(resource, state);
     let texture = texture.clone();
+    // The second plane the same way: the state the lists leave it in,
+    // looked at and not changed; the blend pass takes it from there.
+    let interface = interface_plane(planes, plane_parameters, resource).map(|(r, t)| {
+        let s = crate::resource::host_transition(r, PIXEL_SHADER_RESOURCE)
+            .map_or(PIXEL_SHADER_RESOURCE, |(_, before)| before);
+        crate::resource::host_transition(r, s);
+        (t.clone(), s)
+    });
     let sent = hold(this, || {
         PRESENTS_HELD.fetch_add(1, Ordering::Relaxed);
-        Held::Present(texture, state, frame)
+        Held::Present(texture, state, interface, frame)
     });
     if sent {
         PRESENTS_BEHIND.fetch_add(1, Ordering::Relaxed);
         wake();
     }
     sent
+}
+
+/// The state a plane's texture is sampled in by the blend pass.
+#[cfg(windows)]
+const PIXEL_SHADER_RESOURCE: u32 = 0x80;
+
+/// The second present plane (the interface, with the Series S profile)
+/// when it is to be blended over the first (`crate::compose`): the
+/// title's resource and its host texture. `resource` is the first plane's.
+#[cfg(windows)]
+fn interface_plane(
+    planes: u32,
+    plane_parameters: *const Plane,
+    resource: This,
+) -> Option<(
+    This,
+    &'static windows::Win32::Graphics::Direct3D12::ID3D12Resource,
+)> {
+    if planes < 2 || !crate::compose::on() {
+        return None;
+    }
+    // SAFETY: the title passes `planes` descriptions of PLANE_STRIDE bytes.
+    let plane = unsafe {
+        plane_parameters
+            .cast::<u8>()
+            .add(PLANE_STRIDE)
+            .cast::<Plane>()
+            .as_ref()
+    }?;
+    if plane.count == 0 || plane.resources.is_null() {
+        return None;
+    }
+    // SAFETY: the plane lists `count` resources.
+    let r = unsafe { *plane.resources };
+    if r == resource {
+        return None;
+    }
+    crate::resource::host_resource(r).map(|t| (r, t))
 }
 
 /// Presents sent behind their queue's line since the start
@@ -943,10 +992,11 @@ fn release_held_now(all: bool) {
                             }
                         }
                     }
-                    Held::Present(texture, state, frame) => {
+                    Held::Present(texture, state, interface, frame) => {
                         let show = || {
                             if let Some(host) = crate::host::host() {
-                                let _ = host.present(&texture, state, frame);
+                                let interface = interface.as_ref().map(|(t, s)| (t, *s));
+                                let _ = host.present(&texture, state, interface, frame);
                             }
                         };
                         if all {
@@ -1171,12 +1221,17 @@ fn execute_now(this: This, count: u32, lists: *const This) {
 }
 
 /// The start of a present plane: frame token, then the plane's resources.
+/// The title passes an array of them, `PLANE_STRIDE` bytes apart (then the
+/// source and placement rectangles, color space, flags and more).
 #[repr(C)]
 pub(crate) struct Plane {
     token: u64,
     count: u32,
     resources: *const This,
 }
+/// Bytes from one present plane's description to the next (as the Series
+/// S profile's two planes lie).
+const PLANE_STRIDE: usize = 72;
 /// Submission tagged with the frame it belongs to `(count, lists, frame
 /// token, flags)`; frames are paced elsewhere, so it runs as a plain one.
 extern "system" fn execute_x(this: This, count: u32, lists: *const This, _token: u64, _flags: u32) {
@@ -1474,10 +1529,23 @@ fn present_now(this: This, planes: u32, plane_parameters: *const Plane) -> HRESU
         && let Some(host) = crate::host::host()
     {
         const COPY_SOURCE: u32 = 0x800;
+        let interface = interface_plane(planes, plane_parameters, resource);
+        let interface_state = interface.map(|(r, _)| {
+            crate::resource::host_transition(r, PIXEL_SHADER_RESOURCE)
+                .map_or(PIXEL_SHADER_RESOURCE, |(_, before)| before)
+        });
         let state = crate::resource::host_transition(resource, COPY_SOURCE)
             .map_or(COPY_SOURCE, |(_, before)| before);
-        let shown = host.present(texture, state, frame);
+        let shown = host.present(
+            texture,
+            state,
+            interface.zip(interface_state).map(|((_, t), s)| (t, s)),
+            frame,
+        );
         crate::resource::host_transition(resource, state);
+        if let Some(((r, _), s)) = interface.zip(interface_state) {
+            crate::resource::host_transition(r, s);
+        }
         #[cfg(feature = "diagnostics")]
         blinks(frame, resource, state, shown);
         #[cfg(not(feature = "diagnostics"))]
