@@ -106,6 +106,8 @@ mod shadow;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod shot;
 pub mod signature;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod span_cache;
 #[cfg(windows)]
 mod spread;
 #[cfg(windows)]

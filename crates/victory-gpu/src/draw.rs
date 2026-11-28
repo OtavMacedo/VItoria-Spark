@@ -1068,8 +1068,12 @@ pub(crate) static HEAP_BUFFER_PASSES: AtomicU64 = AtomicU64::new(0);
 /// level so that the marked pass can have this one start anew:
 /// [`State::heap_buffers_marked`].)
 type Ranges = std::collections::HashMap<u32, (std::sync::Arc<crate::shadow::Shadow>, u64, u64)>;
-static RANGES: std::sync::Mutex<Option<std::collections::HashMap<usize, (u64, Ranges)>>> =
-    std::sync::Mutex::new(None);
+/// With `VICTORY_BUFFER_SWEEP`, beside each heap's [`Ranges`]: the span of
+/// each host copy, kept from pass to pass (`crate::span_cache`).
+type SpanCache = crate::span_cache::Spans<std::sync::Arc<crate::shadow::Shadow>>;
+static RANGES: std::sync::Mutex<
+    Option<std::collections::HashMap<usize, (u64, Ranges, Option<SpanCache>)>>,
+> = std::sync::Mutex::new(None);
 /// Per host heap, for [`State::heap_buffers_marked`]: what the marked pass
 /// keeps (`VICTORY_HEAP_PASS_MARKED`; nothing while that is unset).
 type Marked = crate::heap_pass::Picked<std::sync::Arc<crate::shadow::Shadow>>;
@@ -2442,18 +2446,39 @@ impl State {
         // released resource goes stale without a write, and a slot written
         // before its memory had a host copy is only made then.
         let mut kept = RANGES.lock().unwrap_or_else(|e| e.into_inner());
-        let (passes, ranges) = kept
+        let (passes, ranges, cache) = kept
             .get_or_insert_with(Default::default)
             .entry(std::ptr::from_ref(host) as usize)
-            .or_insert_with(|| (0, Ranges::new()));
+            .or_insert_with(|| (0, Ranges::new(), None));
         let changed = host.buffer_changes();
         let slots = if *passes % 16 == 0 {
             ranges.clear();
+            if let Some(cache) = cache {
+                cache.clear();
+            }
             host.buffer_slots()
         } else {
             changed
         };
         *passes += 1;
+        // `VICTORY_BUFFER_SWEEP`: the spans kept beside the map, made from
+        // it when the switch turns on; dropped while it is off, so that
+        // spans not kept up to date are never served.
+        if !crate::span_cache::on() {
+            *cache = None;
+        } else if cache.is_none() {
+            *cache = Some(SpanCache::of(ranges.iter().map(
+                |(&slot, (shadow, from, to))| {
+                    (
+                        slot,
+                        std::sync::Arc::as_ptr(shadow) as usize,
+                        shadow,
+                        *from,
+                        *to,
+                    )
+                },
+            )));
+        }
         // Whether the device was there before the pass: a view that removes
         // it is named below.
         static GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2461,7 +2486,11 @@ impl State {
             !GONE.load(Ordering::Relaxed) && crate::descriptor::host::device_removed().is_none();
         HEAP_PASS_PARTS[1].fetch_add(slots.len() as u64, Ordering::Relaxed);
         for (n, &index) in slots.iter().enumerate() {
-            ranges.remove(&index);
+            if let Some((shadow, from, to)) = ranges.remove(&index)
+                && let Some(cache) = cache.as_mut()
+            {
+                cache.remove(index, std::sync::Arc::as_ptr(&shadow) as usize, from, to);
+            }
             let Some(handle) = heap.handle(index) else {
                 continue;
             };
@@ -2498,6 +2527,10 @@ impl State {
             if host.shows(index, &shadow.buffer) == Some(false) {
                 HEAP_VIEWS_ELSEWHERE.fetch_add(1, Ordering::Relaxed);
             }
+            if let Some(cache) = cache.as_mut() {
+                let key = std::sync::Arc::as_ptr(&shadow) as usize;
+                cache.insert(index, key, &shadow, address, address + len);
+            }
             ranges.insert(index, (shadow, address, address + len));
         }
         let views = ranges.len() as u32;
@@ -2506,13 +2539,21 @@ impl State {
             usize,
             (std::sync::Arc<crate::shadow::Shadow>, u64, u64),
         > = std::collections::HashMap::new();
-        for (shadow, from, to) in ranges.values() {
-            let key = std::sync::Arc::as_ptr(shadow) as usize;
-            let span = spans
-                .entry(key)
-                .or_insert_with(|| (shadow.clone(), *from, *to));
-            span.1 = span.1.min(*from);
-            span.2 = span.2.max(*to);
+        if let Some(cache) = cache.as_mut() {
+            // Kept from pass to pass (`VICTORY_BUFFER_SWEEP`).
+            for (key, shadow, from, to) in cache.spans(|s| ranges.get(&s).map(|r| (r.1, r.2))) {
+                spans.insert(key, (shadow, from, to));
+            }
+            crate::span_cache::note_pass(ranges.len());
+        } else {
+            for (shadow, from, to) in ranges.values() {
+                let key = std::sync::Arc::as_ptr(shadow) as usize;
+                let span = spans
+                    .entry(key)
+                    .or_insert_with(|| (shadow.clone(), *from, *to));
+                span.1 = span.1.min(*from);
+                span.2 = span.2.max(*to);
+            }
         }
         drop(kept);
         let bytes: u64 = spans.values().map(|s| s.2 - s.1).sum();
@@ -2612,6 +2653,9 @@ impl State {
             .or_insert_with(|| Marked::new(false));
         let changed = host.buffer_changes();
         let record = |index: u32| heap.handle(index).map(crate::descriptor::record_at);
+        // `VICTORY_HEAP_SCAN_ALT`: the compare of every kept record every
+        // few passes where the descriptor pass sees copied records.
+        ranges.scan_every(crate::heap_pass::scan_every(heap.copies_seen()));
         let slots = ranges.plan(
             changed,
             || host.buffer_slots(),
@@ -2680,6 +2724,7 @@ impl State {
             ranges.keep(index, key, &shadow, address, address + len, record, entry);
         }
         let views = ranges.views() as u32;
+        let scanned = ranges.scanned();
         // Per host copy, the span its picked views cover.
         let spans = ranges.spans();
         drop(kept);
@@ -2721,16 +2766,19 @@ impl State {
         HEAP_BUFFER_PASSES.fetch_add(1, Ordering::Relaxed);
         HEAP_BUFFER_MICROS.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         // Every 256 passes: how many of the slots looked at held the record
-        // of their last look (what a further cut could leave alone).
-        static SEEN: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+        // of their last look (what a further cut could leave alone), and
+        // how many passes compared every kept record (`VICTORY_HEAP_SCAN_ALT`).
+        static SEEN: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
         SEEN[1].fetch_add(slots.len() as u64, Ordering::Relaxed);
         SEEN[2].fetch_add(same, Ordering::Relaxed);
+        SEEN[3].fetch_add(u64::from(scanned), Ordering::Relaxed);
         if SEEN[0].fetch_add(1, Ordering::Relaxed) % 256 == 255 {
             tracing::info!(
-                "the marked pass over the heap's buffer views (VICTORY_HEAP_PASS_MARKED), its last 256 passes: {} slots looked at, {} of them held the record seen at their last look; {} views kept now",
+                "the marked pass over the heap's buffer views (VICTORY_HEAP_PASS_MARKED), its last 256 passes: {} slots looked at, {} of them held the record seen at their last look; {} views kept now; {} passes compared every kept record (VICTORY_HEAP_SCAN_ALT)",
                 SEEN[1].swap(0, Ordering::Relaxed),
                 SEEN[2].swap(0, Ordering::Relaxed),
                 views,
+                SEEN[3].swap(0, Ordering::Relaxed),
             );
         }
         static LOGGED: AtomicU64 = AtomicU64::new(0);
