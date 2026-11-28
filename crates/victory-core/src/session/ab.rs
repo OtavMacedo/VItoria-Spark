@@ -278,6 +278,7 @@ impl AbStats {
                 .opt_num("copy_back_ms", self.part(i, |r| r.copy_back))
                 .opt_num("draws", self.part(i, |r| r.draws))
                 .opt_num("dropped", self.part(i, |r| r.dropped))
+                .opt_num("guard_faults", self.part(i, |r| r.guard_faults))
                 .finish()
         };
         let verdict = |v: Option<Paired>| match v {

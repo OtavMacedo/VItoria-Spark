@@ -224,6 +224,8 @@ pub struct Rate {
     pub copy_back_mb: f64,
     /// Host pipelines queued and not made when the line was written.
     pub making: f64,
+    /// Write faults the guards of view memory took, per frame.
+    pub guard_faults: f64,
 }
 
 /// Counts by key, with a detail kept from the first time and how many
@@ -465,6 +467,7 @@ fn medians_of(world: bool, rates: &[&Rate]) -> Medians {
         copies_mb: m(|r| r.copies_mb),
         textures_mb: m(|r| r.textures_mb),
         copy_back_mb: m(|r| r.copy_back_mb),
+        guard_faults: m(|r| r.guard_faults),
     }
 }
 
@@ -485,6 +488,7 @@ pub struct Medians {
     pub copies_mb: Option<f64>,
     pub textures_mb: Option<f64>,
     pub copy_back_mb: Option<f64>,
+    pub guard_faults: Option<f64>,
 }
 
 impl Summary {
@@ -786,6 +790,7 @@ impl Summary {
             textures_mb: n("spark.textures_mb"),
             copy_back_mb: n("spark.copy_back_mb"),
             making: n("spark.making"),
+            guard_faults: n("spark.guard_faults"),
         });
     }
 
@@ -972,6 +977,7 @@ impl Summary {
                 .opt_num("copies_mb", m.copies_mb)
                 .opt_num("textures_mb", m.textures_mb)
                 .opt_num("copy_back_mb", m.copy_back_mb)
+                .opt_num("guard_faults", m.guard_faults)
                 .finish()
         };
         let medians = medians_json(self.medians());
