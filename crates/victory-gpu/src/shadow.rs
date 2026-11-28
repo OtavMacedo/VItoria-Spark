@@ -1777,6 +1777,7 @@ fn workers() -> &'static Workers {
             let _ = std::thread::Builder::new()
                 .name(format!("victory-wide-{i}"))
                 .spawn(move || {
+                    crate::framelog::raise_helper("victory-wide");
                     let workers = WORKERS.get().expect("made above");
                     loop {
                         let job = {
