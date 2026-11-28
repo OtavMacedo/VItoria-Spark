@@ -2336,8 +2336,10 @@ fn install() {
     }
     static ONCE: std::sync::Once = std::sync::Once::new();
     // The switch is read here, not first in the handler ([`open`] asks
-    // it): reading the environment allocates.
+    // it): reading the environment allocates. So is the switch
+    // [`open_here`] asks (`VICTORY_UNGUARD_RUNS`).
     light_kept();
+    crate::switches::UNGUARD_RUNS.get();
     // SAFETY: the handler only touches our guard state and protections.
     ONCE.call_once(|| unsafe {
         AddVectoredExceptionHandler(1, Some(on_write));
