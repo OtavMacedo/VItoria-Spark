@@ -109,6 +109,12 @@ pub(crate) static GUARD_REST: Toggle = Toggle::new("VICTORY_GUARD_REST", crate::
 /// faults four times in a frame is left open, 0 off. As above.
 pub(crate) static GUARD_HOT: Toggle = Toggle::new("VICTORY_GUARD_HOT", crate::watch::hot_frames);
 
+/// `VICTORY_FAULT_UNLOCKED` (`crate::watch`'s write faults): each fault
+/// decides on its own whether it opens its block without the guards'
+/// lock. The marks it leaves are kept and honoured under both arms, and
+/// whoever takes the lock next, under either, settles them.
+pub(crate) static FAULT_UNLOCKED: Toggle = Toggle::flag("VICTORY_FAULT_UNLOCKED");
+
 /// `VICTORY_NOTHING_NEW_FAST` (`crate::shadow`'s looks): each look at a
 /// copy's pending ranges or pages' notes decides on its own; the flag it
 /// reads is kept under both arms.
@@ -174,7 +180,7 @@ fn no_sweep(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 30] = [
+pub static TABLE: [Entry; 31] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -315,6 +321,11 @@ pub static TABLE: [Entry; 30] = [
     Entry {
         toggle: &LIST_REAPER,
         part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &FAULT_UNLOCKED,
+        part: "copias",
         inert: &[],
     },
     Entry {
