@@ -24,6 +24,10 @@ use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 use crate::host::{HostList, host};
 use crate::watch::PAGE;
 
+/// Copies of memory the title gave up, let go at once (`crate::freed`).
+pub(crate) mod freed;
+pub(crate) use freed::freed_let_go;
+
 /// A title buffer's host copy.
 pub(crate) struct Shadow {
     pub(crate) buffer: ID3D12Resource,

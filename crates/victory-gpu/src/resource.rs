@@ -1389,7 +1389,16 @@ fn hosted(this: This, make: bool) -> Option<Made> {
                     || crate::descriptor::host::next_start(start, start.saturating_add(bytes))
                         .is_some()
                     || crate::descriptor::host::first_viewed(start).is_some_and(|first| first > 0));
-            let reserved = if partly {
+            // The size cap (`crate::tiles::max_dim`): a texture over it
+            // is made level by level even when it holds every level, so
+            // that the levels over the cap get no memory; not one another
+            // texture of the host's lies in (its copies name every level).
+            let capped = !partly
+                && readable
+                && bytes >= crate::tiles::floor()
+                && crate::tiles::over_max_dim(r.desc.width, r.desc.height)
+                && alias_of(this).is_none();
+            let reserved = if partly || capped {
                 host_texture_as(&r.desc, r.host.state, clear, true)
             } else {
                 None
@@ -1403,6 +1412,9 @@ fn hosted(this: This, make: bool) -> Option<Made> {
             // (Both or neither: a reserved texture the card will not cut
             // into tiles is dropped here, and the old kind is made below.)
             if cut.is_some() {
+                if capped {
+                    crate::tiles::CAPPED[0].fetch_add(1, Relaxed);
+                }
                 tiled = cut;
                 texture = reserved;
             }

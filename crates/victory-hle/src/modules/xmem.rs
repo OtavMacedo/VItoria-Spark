@@ -339,6 +339,27 @@ pub extern "system" fn XMemAllocDefault(size: usize, attributes: u64) -> *mut c_
     }
 }
 
+/// The bytes of the region that starts an allocation at `address` (the
+/// committed pages from there with the same protection); 0 if `address`
+/// does not start one.
+fn region_len(address: *const c_void) -> usize {
+    // SAFETY: plain data; zero is a valid value.
+    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: a query of our own process into a sized structure.
+    let asked = unsafe {
+        VirtualQueryEx(
+            GetCurrentProcess(),
+            address,
+            &mut info,
+            size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if asked == 0 || info.State != MEM_COMMIT || info.AllocationBase.cast_const() != address {
+        return 0;
+    }
+    info.RegionSize
+}
+
 /// Frees what [`XMemAllocDefault`] returned, given the same attributes.
 pub extern "system" fn XMemFreeDefault(address: *mut c_void, attributes: u64) {
     if address.is_null() {
@@ -348,6 +369,11 @@ pub extern "system" fn XMemFreeDefault(address: *mut c_void, attributes: u64) {
     // whole reservation, or a header-prefixed block.
     unsafe {
         if attributes & ALLOC_32BIT != 0 {
+            // `VICTORY_RELEASE_FREED`: the GPU side lets go of what it made
+            // of the reservation first.
+            if victory_gpu::release_freed() {
+                victory_gpu::title_memory_released(address as usize, region_len(address));
+            }
             VirtualFree(address, 0, MEM_RELEASE);
             return;
         }
@@ -1345,6 +1371,20 @@ mod tests {
         let p = XMemAlloc(4096, ALLOC_32BIT);
         assert!(!p.is_null() && (p as usize) < 1 << 32);
         XMemFree(p, ALLOC_32BIT);
+    }
+
+    /// The length the GPU side is told of when a 32-bit reservation is
+    /// freed (`VICTORY_RELEASE_FREED`): the committed region from its start;
+    /// nothing for an address inside an allocation or for one never made.
+    #[test]
+    fn region_len_is_the_allocation_from_its_start() {
+        let p = XMemAllocDefault(3 * PAGE, ALLOC_32BIT);
+        assert!(!p.is_null());
+        assert!(region_len(p) >= 3 * PAGE);
+        // SAFETY: inside the allocation just made.
+        assert_eq!(region_len(unsafe { p.cast::<u8>().add(PAGE) }.cast()), 0);
+        XMemFreeDefault(p, ALLOC_32BIT);
+        assert_eq!(region_len(std::ptr::null()), 0);
     }
 
     #[test]

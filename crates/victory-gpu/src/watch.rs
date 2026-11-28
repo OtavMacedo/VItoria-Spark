@@ -2312,6 +2312,8 @@ pub fn title_memory_remapped(at: usize, len: usize) {
     // Host copies of placed textures there have nothing left to come from:
     // release the ones nothing else holds now, not seconds later.
     crate::resource::evict_placed_in(at as u64, len as u64);
+    // And the copies there nothing holds (`VICTORY_RELEASE_FREED`).
+    crate::freed::remapped(at, len);
     let mut g = guards();
     let range = at / BLOCK..at.saturating_add(len).div_ceil(BLOCK);
     g.rests.forget(range.start, range.end);

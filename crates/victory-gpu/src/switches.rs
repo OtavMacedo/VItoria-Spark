@@ -99,6 +99,19 @@ pub(crate) static GUARD_REST: Toggle = Toggle::new("VICTORY_GUARD_REST", crate::
 /// faults four times in a frame is left open, 0 off. As above.
 pub(crate) static GUARD_HOT: Toggle = Toggle::new("VICTORY_GUARD_HOT", crate::watch::hot_frames);
 
+/// `VICTORY_RELEASE_FREED` (`crate::freed`): each unmapping, mapping or
+/// release of title memory decides on its own whether the copies there
+/// nothing holds go now; a copy let go under one arm is made again at its
+/// next use under either.
+pub(crate) static RELEASE_FREED: Toggle = Toggle::flag("VICTORY_RELEASE_FREED");
+
+/// `VICTORY_COMMIT_SHRINK_PCT` (`crate::commitshrink`): the percent of the
+/// commit limit past which the host's caches of the PC's memory are kept
+/// short, 0 off. Its tight state is read only with the switch on, and what
+/// the tight mode let go is made again when it is needed.
+pub(crate) static COMMIT_SHRINK_PCT: Toggle =
+    Toggle::new("VICTORY_COMMIT_SHRINK_PCT", commit_shrink_percent);
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -122,7 +135,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 24] = [
+pub static TABLE: [Entry; 26] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -247,6 +260,16 @@ pub static TABLE: [Entry; 24] = [
         part: "preparo",
         inert: &[],
     },
+    Entry {
+        toggle: &RELEASE_FREED,
+        part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &COMMIT_SHRINK_PCT,
+        part: "preparo",
+        inert: &[],
+    },
 ];
 
 /// Checks `SPARK_AB`/`SPARK_PLAN` against the table, before the title
@@ -319,6 +342,15 @@ fn texture_room_percent(value: Option<&str>) -> u64 {
         .map_or(90, |percent| percent.clamp(50, 97))
 }
 
+/// `VICTORY_COMMIT_SHRINK_PCT`: unset, `0` or not a number off (0); else
+/// the percent, kept in 50 to 99.
+fn commit_shrink_percent(value: Option<&str>) -> u64 {
+    match value.and_then(|v| v.trim().parse::<u64>().ok()) {
+        None | Some(0) => 0,
+        Some(percent) => percent.clamp(50, 99),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +369,12 @@ mod tests {
         assert_eq!(texture_room_percent(Some("94")), 94);
         assert_eq!(texture_room_percent(Some("10")), 50);
         assert_eq!(texture_room_percent(Some("100")), 97);
+        assert_eq!(commit_shrink_percent(None), 0);
+        assert_eq!(commit_shrink_percent(Some("0")), 0);
+        assert_eq!(commit_shrink_percent(Some("x")), 0);
+        assert_eq!(commit_shrink_percent(Some(" 85 ")), 85);
+        assert_eq!(commit_shrink_percent(Some("10")), 50);
+        assert_eq!(commit_shrink_percent(Some("100")), 99);
     }
 
     /// Without the variable, a quarter of the logical processors, 2 to 6;
