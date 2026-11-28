@@ -54,6 +54,10 @@ pub(crate) static UNGUARD_RUNS: Toggle = Toggle::flag("VICTORY_UNGUARD_RUNS");
 /// arm is let go, not kept.
 pub(crate) static READ_BACK_POOL: Toggle = Toggle::flag("VICTORY_READ_BACK_POOL");
 
+/// `VICTORY_UNDER_WIDE` (`crate::shadow`): each range of the merge under
+/// flights' writes decides on its own; the bytes put in are the same.
+pub(crate) static UNDER_WIDE: Toggle = Toggle::flag("VICTORY_UNDER_WIDE");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -77,7 +81,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 15] = [
+pub static TABLE: [Entry; 16] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -154,6 +158,11 @@ pub static TABLE: [Entry; 15] = [
     },
     Entry {
         toggle: &READ_BACK_POOL,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &UNDER_WIDE,
         part: "preparo",
         inert: &[],
     },
