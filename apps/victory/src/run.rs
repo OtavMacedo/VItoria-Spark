@@ -154,6 +154,9 @@ fn run_title(
     victory_loader::report_crashes();
     victory_loader::log_crashes_to(temp.with_file_name("crashes.log"));
     victory_hle::modules::xmem::keep_in_memory();
+    // A ceiling on the working set (VICTORY_WORKING_SET_MB, off without it),
+    // before the title touches its memory; not with the floor above.
+    victory_loader::working_set::apply_asked();
     victory_hle::runtime::use_console_timers();
     #[cfg(feature = "diagnostics")]
     diagnostics(&image, &cfg);
