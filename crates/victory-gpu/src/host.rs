@@ -4071,12 +4071,11 @@ pub(crate) fn settle_for_fence() {
 }
 
 /// Resets the host lists of settled flights and keeps them for reuse, as
-/// a queue does for the lists it ran (`crate::list::recycle`).
+/// a queue does for the lists it ran (`crate::list::recycle`; with
+/// `VICTORY_LIST_REAPER=1` on a thread of its own, `crate::list_reaper`).
 fn land() {
     let landed = std::mem::take(&mut line().landed);
-    for (lists, order) in landed {
-        crate::list::recycle(lists, &order);
-    }
+    crate::list_reaper::land(landed);
 }
 
 fn fence_reached(completed: u64, target: u64) -> bool {

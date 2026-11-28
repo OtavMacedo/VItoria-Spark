@@ -46,6 +46,11 @@ pub(crate) static WIDE_THREADS: Toggle = Toggle::new("VICTORY_WIDE_THREADS", wid
 /// decides on its own how many kept threads it wakes.
 pub(crate) static WIDE_WAKE_ONE: Toggle = Toggle::flag("VICTORY_WIDE_WAKE_ONE");
 
+/// `VICTORY_LIST_REAPER` (`crate::list_reaper`): each landing decides on
+/// its own where its lists are reset; lists handed to the thread under one
+/// arm are reset there under the other.
+pub(crate) static LIST_REAPER: Toggle = Toggle::flag("VICTORY_LIST_REAPER");
+
 /// `VICTORY_MAPPED_BATCH` (`crate::texture`).
 pub(crate) static MAPPED_BATCH: Toggle = Toggle::flag("VICTORY_MAPPED_BATCH");
 
@@ -81,7 +86,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 15] = [
+pub static TABLE: [Entry; 16] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -159,6 +164,11 @@ pub static TABLE: [Entry; 15] = [
     Entry {
         toggle: &WIDE_WAKE_ONE,
         part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &LIST_REAPER,
+        part: "preparo",
         inert: &[],
     },
 ];

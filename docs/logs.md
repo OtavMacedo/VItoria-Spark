@@ -151,7 +151,7 @@ opção dos dois jeitos, em blocos alternados da mesma cena:
   `VICTORY_SKIP_WC_BACK` (mede tempo, não imagem: o que ficou sem voltar num
   braço continua assim no outro), `VICTORY_STEP_INDEX`,
   `VICTORY_TEXTURE_ROOM_PERCENT`, `VICTORY_WIDE_MERGE`, `VICTORY_WIDE_REFRESH`, `VICTORY_WIDE_THREADS`
-  (com dois números: `SPARK_AB=VICTORY_WIDE_THREADS=4/8`) e `VICTORY_WIDE_WAKE_ONE`. Outra chave em
+  (com dois números: `SPARK_AB=VICTORY_WIDE_THREADS=4/8`), `VICTORY_WIDE_WAKE_ONE` e `VICTORY_LIST_REAPER`. Outra chave em
   `SPARK_AB` recusa a execução na hora, com a lista das que podem; e também uma chave que ficaria sem efeito pela
   configuração (ex.: `VICTORY_MERGE_MASK` com o bit 2 de `VICTORY_QUEUE2`), pois a execução não mediria nada.
 - As capturas (`VICTORY_CAPTURE`) levam o braço no nome (`frame-N-a.png`, `frame-N-b.png`), para comparar a
