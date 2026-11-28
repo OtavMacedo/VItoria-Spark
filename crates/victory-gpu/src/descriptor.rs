@@ -768,6 +768,11 @@ struct Views {
     /// The shapes of views of placed memory, and where each is.
     shapes: Vec<Shape>,
     shape_index: std::collections::BTreeMap<Shape, u32>,
+    /// Entries of views that no resource releases (constant buffer views
+    /// and views of placed memory that did not fit a record), oldest first,
+    /// with the generation each was made at: past [`ownerless_most`] the
+    /// oldest is freed, so they cannot grow for the whole run.
+    ownerless: std::collections::VecDeque<(u32, u32)>,
 }
 
 /// Read far more often than written: every slot a draw reads through a
@@ -781,7 +786,36 @@ static VIEWS: std::sync::RwLock<Views> = std::sync::RwLock::new(Views {
     free: Vec::new(),
     shapes: Vec::new(),
     shape_index: std::collections::BTreeMap::new(),
+    ownerless: std::collections::VecDeque::new(),
 });
+
+/// How many table entries of views without a resource are kept
+/// ([`Views::ownerless`]): `VICTORY_OWNERLESS_VIEWS=<n>`; unset or `0`, the
+/// default, keeps all. Read once.
+///
+/// Such an entry is freed with nothing: no resource names it. Once the
+/// shapes of placed views are full (`SHAPES`; the title makes far more
+/// kinds than it has textures when it leaves words unwritten, see
+/// `VICTORY_PLACED_VIEW_PADDING`) every placed view it writes becomes one,
+/// thousands a second, and kept for the run they took 16.7 GB after 70
+/// minutes in another fork of the family. A descriptor names the view it
+/// was written with for a frame or a few, so the oldest of a million are
+/// long out of use; one naming a freed entry reads as stale (no view), as
+/// one naming a released resource's view does. 1048576 is the value used
+/// there.
+fn ownerless_most() -> usize {
+    static MOST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_OWNERLESS_VIEWS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// Entries of views without a resource freed past [`ownerless_most`]
+/// since the start.
+static OWNERLESS_FREED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const VIEW_TAG: u32 = u32::from_le_bytes(*b"vVIE");
 
 /// A record is the tag and two words, `i` and `generation` (the host keeps
@@ -919,6 +953,55 @@ impl Views {
     /// The record words of `view` as a table entry: its entry (a new or a
     /// freed one if the view is not there yet) and that entry's generation.
     fn entry(&mut self, view: View) -> [u32; 2] {
+        self.entry_kept(view, ownerless_most())
+    }
+
+    /// [`entry`](Self::entry), keeping at most `most` entries of views
+    /// without a resource (0: all).
+    fn entry_kept(&mut self, view: View, most: usize) -> [u32; 2] {
+        let ownerless = matches!(view, View::Constant(..) | View::Placed(..));
+        let fresh = !self.index.contains_key(&view);
+        let words = self.entry_made(view);
+        if most != 0 && ownerless && fresh {
+            self.ownerless.push_back((words[0], words[1]));
+            while self.ownerless.len() > most {
+                let Some((i, generation)) = self.ownerless.pop_front() else {
+                    break;
+                };
+                self.free_ownerless(i, generation);
+            }
+        }
+        words
+    }
+
+    /// Frees entry `i` if it still holds the view it had at `generation`
+    /// (it may have been freed and made again for another view since).
+    fn free_ownerless(&mut self, i: u32, generation: u32) {
+        let Some((view, current)) = self.list.get(i as usize).cloned() else {
+            return;
+        };
+        if current != generation || self.index.get(&view) != Some(&i) {
+            return;
+        }
+        self.index.remove(&view);
+        // As `forget` does: below the bits that say a record is no entry.
+        self.list[i as usize].1 = ((generation + 1) & GENERATIONS).max(1);
+        self.free.push(i);
+        if crate::heap_pass::marked_set() {
+            note_forgotten(i);
+        }
+        let n = OWNERLESS_FREED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == 1 || (n >= 1 << 16 && n.is_power_of_two()) {
+            tracing::info!(
+                freed = n,
+                kept = self.ownerless.len(),
+                "table entries of views without a resource freed past VICTORY_OWNERLESS_VIEWS, oldest first"
+            );
+        }
+    }
+
+    /// The entry of `view`, made if it is not there yet.
+    fn entry_made(&mut self, view: View) -> [u32; 2] {
         let i = match self.index.get(&view) {
             Some(&i) => i,
             None => {
@@ -1883,6 +1966,61 @@ mod tests {
         assert_ne!(constant_words(0x1000, 256), constant_words(0x1000, 512));
         assert_ne!(constant_words(0x1000, 256), constant_words(0x1100, 256));
         assert_ne!(constant_words(0x1000, 1 << 14), constant_words(0x1000, 64));
+    }
+
+    /// Entries of views no resource releases stay under their cap: the
+    /// oldest go stale, the newest still name their views, entries are
+    /// reused rather than added, and views of resources are never dropped.
+    #[test]
+    fn ownerless_entries_are_capped() {
+        let mut views = Views {
+            list: Vec::new(),
+            index: std::collections::BTreeMap::new(),
+            by_resource: std::collections::BTreeMap::new(),
+            free: Vec::new(),
+            shapes: Vec::new(),
+            shape_index: std::collections::BTreeMap::new(),
+            ownerless: std::collections::VecDeque::new(),
+        };
+        let placed = |n: u32| View::Placed(false, [n; 14], [n; 16]);
+        let named = |views: &Views, words: [u32; 2], view: &View| {
+            views
+                .list
+                .get(words[0] as usize)
+                .is_some_and(|(v, g)| *g == words[1] && v == view)
+        };
+        let words: Vec<[u32; 2]> = (0..10).map(|n| views.entry_kept(placed(n), 4)).collect();
+        assert_eq!(views.index.len(), 4, "four kept");
+        assert!(
+            views.list.len() <= 5,
+            "entries reused, not added: {}",
+            views.list.len()
+        );
+        for (n, w) in words.iter().enumerate() {
+            assert_eq!(named(&views, *w, &placed(n as u32)), n >= 6, "entry {n}");
+        }
+        // The same view written again keeps its words.
+        assert_eq!(views.entry_kept(placed(9), 4), words[9]);
+        // A view of a resource is freed with the resource only.
+        let shader = View::Shader(0x1234, None);
+        let kept = views.entry_kept(shader.clone(), 4);
+        for n in 10..40 {
+            views.entry_kept(placed(n), 4);
+        }
+        assert!(named(&views, kept, &shader));
+        assert!(views.list.len() <= 6);
+        // Constant buffer views that did not fit a record count too.
+        let constant = View::Constant(1 << 50, 64);
+        let constant_words = views.entry_kept(constant.clone(), 4);
+        for n in 40..44 {
+            views.entry_kept(placed(n), 4);
+        }
+        assert!(!named(&views, constant_words, &constant));
+        // 0 keeps them all.
+        for n in 100..120 {
+            views.entry_kept(placed(n), 0);
+        }
+        assert_eq!(views.index.len(), 1 + 4 + 20);
     }
 
     /// The leak of run 65: a title that writes constant buffer views and
