@@ -15,6 +15,8 @@ pub(super) struct Meter {
     caption: Option<Vec<u16>>,
     /// What each frame was made of, for the session log.
     phases: crate::phases::Reader,
+    /// The guards' write faults so far, at the last window.
+    guard_faults: u64,
 }
 
 impl Meter {
@@ -29,6 +31,7 @@ impl Meter {
             logged: now,
             caption: None,
             phases: crate::phases::Reader::new(),
+            guard_faults: crate::framelog::total(crate::framelog::T::GuardFaults),
         }
     }
 
@@ -69,6 +72,13 @@ impl Meter {
         let [back_ms, back_mb] =
             [0, 1].map(|i| COPY_BACK[i].swap(0, Ordering::Relaxed) as f64 / [1e3, 1e6][i] / frames);
         let dropped = crate::draw::take_dropped() as f64 / frames;
+        let guard_faults = {
+            let total = crate::framelog::total(crate::framelog::T::GuardFaults);
+            total.wrapping_sub(std::mem::replace(&mut self.guard_faults, total)) as f64 / frames
+        };
+        // The guards' lock (diagnostics builds) and their rests.
+        let (guard_wait, guard_held) = crate::watch::guards_lock_line(frames);
+        crate::watch::rests_line(frames);
         victory_core::session::frame_window(victory_core::session::summary::Rate {
             fps,
             ms,
@@ -84,6 +94,9 @@ impl Meter {
             textures_mb: texture_mb,
             copy_back_mb: back_mb,
             making: crate::pipeline::making() as f64,
+            guard_faults,
+            guard_lock_wait_ms: guard_wait,
+            guard_lock_held_ms: guard_held,
         });
         let drop_causes = crate::draw::take_drop_causes().map(|n| n as f64 / frames);
         let indirect = crate::list::take_indirect() as f64 / frames;
@@ -332,6 +345,9 @@ impl Meter {
                 spark.dropped = dropped,
                 spark.indirect = indirect,
                 spark.making = crate::pipeline::making(),
+                spark.guard_faults = guard_faults,
+                spark.guard_lock_wait_ms = guard_wait,
+                spark.guard_lock_held_ms = guard_held,
                 "{fps:.1} fps, {ms:.1} ms/frame ({cpu:.1} preparing: copies {copy_ms:.1} ms \
                  {copy_mb:.1} MB{watch}, textures {texture_ms:.1} ms {texture_mb:.1} MB; {gpu:.1} on the \
                  GPU; {back_ms:.1} copying back {back_mb:.1} MB), {draws:.0} draws/frame, \
