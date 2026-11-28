@@ -4584,11 +4584,22 @@ impl State {
             };
             #[cfg(feature = "diagnostics")]
             list.note_op(|| self.op_text(format!("draw {count}x{instances}"), false));
+            let canvas = if count == 3 && instances == 1 {
+                self.legacy_canvas_viewport()
+            } else {
+                None
+            };
+            if let Some(viewport) = canvas {
+                viewports(list, &[viewport]);
+            }
             // SAFETY: an open list with everything set.
             unsafe {
                 list.list
                     .DrawInstanced(count, instances, from, first_instance)
             };
+            if canvas.is_some() {
+                viewports(list, &self.viewports);
+            }
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
         if !ran {
@@ -4602,6 +4613,80 @@ impl State {
     /// geometry stage rectangle pipelines get (`HostPipeline::rects`).
     fn completes_rects(&self) -> bool {
         crate::pipeline::host_pipeline(self.pipeline as This).is_some_and(|p| p.rects)
+    }
+
+    /// With an output smaller than 3840x2160 (`dxgi::set_output_size`): the
+    /// frontend's last triangle (its interface composite, by these shaders) is
+    /// drawn with an output-sized viewport, but some screens project it
+    /// against the legacy 3840x2160 canvas (an orthographic matrix in its
+    /// constants). For that draw the viewport is the canvas, so that the
+    /// projection lands on the smaller target; the scissor and target stay.
+    /// Such screens come with a UI laid out for the output (the title's
+    /// settings, `apps/victory`'s `ui_follows_output`); a composite that
+    /// does not fit is described ([`note_composite`]).
+    fn legacy_canvas_viewport(&self) -> Option<D3D12_VIEWPORT> {
+        const VERTEX: &str = "0602c2384acbb3b2";
+        const PIXEL: &str = "a78d088fa55aa495";
+        const CANVAS: (f32, f32) = (3840.0, 2160.0);
+        let (width, height) = crate::dxgi::patched_output()?;
+        if self.depth != 0 {
+            return None;
+        }
+        let pipeline = crate::pipeline::host_pipeline(self.pipeline as This)?;
+        let has = |hash: &str| pipeline.stages.iter().any(|s| s.shader.hash == hash);
+        if !has(VERTEX) || !has(PIXEL) {
+            return None;
+        }
+        let [viewport] = self.viewports.as_slice() else {
+            note_composite(self.viewports.first(), None);
+            return None;
+        };
+        // The composite's constants: the second view of its first table, 480
+        // bytes, the projection at byte 64.
+        let mut matrix = [0u8; 64];
+        let read = match self.roots_ref(false).first() {
+            Some(Root::Table(table)) => {
+                match table.checked_add(64).and_then(crate::descriptor::view) {
+                    Some(View::Constant(address, 480)) => address
+                        .checked_add(64)
+                        .is_some_and(|at| crate::host::read_into(at as *const u8, &mut matrix)),
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        let (words, _) = matrix.as_chunks::<4>();
+        let word = |i: usize| f32::from_le_bytes(words[i]);
+        let at = (viewport.TopLeftX, viewport.TopLeftY);
+        let size = (viewport.Width, viewport.Height);
+        if !read || at != (0.0, 0.0) || size != (width as f32, height as f32) || size == CANVAS {
+            note_composite(Some(viewport), read.then(|| (word(0), word(5))));
+            return None;
+        }
+        #[rustfmt::skip]
+        let legacy_projection: [f32; 16] = [
+            2.0 / CANVAS.0, 0.0, 0.0, 0.0,
+            0.0, -2.0 / CANVAS.1, 0.0, 0.0,
+            0.0, 0.0, -1.0, 0.0,
+            -1.0, 1.0, 0.0, 1.0,
+        ];
+        if !(0..16).all(|i| word(i) == legacy_projection[i]) {
+            note_composite(Some(viewport), Some((word(0), word(5))));
+            return None;
+        }
+        static FIRST: std::sync::Once = std::sync::Once::new();
+        FIRST.call_once(|| {
+            tracing::info!(
+                width,
+                height,
+                "frontend draw projected on the legacy 4K canvas fitted to the output"
+            );
+        });
+        Some(D3D12_VIEWPORT {
+            Width: CANVAS.0,
+            Height: CANVAS.1,
+            ..*viewport
+        })
     }
 
     /// Binds vertex buffers holding the rectangles of vertices `first..first
@@ -5660,6 +5745,38 @@ const RECTANGLES: u32 = 17;
 const LINE_LOOP: u32 = 18;
 const QUADS: u32 = 19;
 const QUAD_STRIP: u32 = 20;
+
+/// Says how the frontend's interface composite is drawn at a patched output
+/// when it is not fitted to the legacy canvas
+/// ([`State::legacy_canvas_viewport`]): its viewport and the canvas its
+/// projection lays out for (from the x and y scales, `2 / width` and
+/// `-2 / height`), so a run tells which canvas its screens use. Once per
+/// distinct pair, at most eight; the composite is one draw a frame.
+fn note_composite(viewport: Option<&D3D12_VIEWPORT>, scale: Option<(f32, f32)>) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.len() >= 8 {
+        return;
+    }
+    let viewport = viewport.map_or_else(
+        || "none or several".to_owned(),
+        |v| format!("{}x{} at {},{}", v.Width, v.Height, v.TopLeftX, v.TopLeftY),
+    );
+    let canvas = scale.map_or_else(
+        || "unread".to_owned(),
+        |(x, y)| format!("{}x{}", 2.0 / x, -2.0 / y),
+    );
+    let key = format!("{viewport} {canvas}");
+    if seen.contains(&key) {
+        return;
+    }
+    seen.push(key);
+    tracing::info!(
+        viewport,
+        projected_for = canvas,
+        "frontend interface composite at the patched output, not on the legacy 4K canvas"
+    );
+}
 
 /// Fixed-function state, straight onto the host list.
 pub(crate) fn viewports(list: &HostList, viewports: &[D3D12_VIEWPORT]) {
