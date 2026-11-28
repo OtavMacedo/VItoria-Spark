@@ -498,7 +498,7 @@ fn on_the_card(shader: &HostShader, constants: [u32; 2]) -> Option<u32> {
 }
 
 /// As [`on_the_card`], and gives the first `dwords` dwords of the UAV.
-fn whole_uav(shader: &HostShader, constants: [u32; 2], dwords: u32) -> Option<Vec<u32>> {
+pub(super) fn whole_uav(shader: &HostShader, constants: [u32; 2], dwords: u32) -> Option<Vec<u32>> {
     let Ok(host) = Host::new(false) else {
         eprintln!("no SM 6.6 hardware device; not run");
         return None;
