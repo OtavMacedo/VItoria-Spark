@@ -55,6 +55,8 @@ mod draw;
 #[cfg(windows)]
 mod drvwatch;
 pub mod dxgi;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod evict_hold;
 #[cfg(windows)]
 mod external;
 pub mod fence;

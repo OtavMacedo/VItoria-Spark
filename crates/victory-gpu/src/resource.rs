@@ -2114,7 +2114,9 @@ pub(crate) fn evict_placed_in(base: u64, len: u64) -> u64 {
             if first.is_none() {
                 first = Some(at);
             }
-            crate::host::retire(host);
+            // Retired at once, or held some frames (`crate::evict_hold`).
+            let bytes = host.bytes;
+            crate::evict_hold::let_go(at, host, bytes, r.host.used.load(Relaxed));
         }
     };
     #[cfg(feature = "diagnostics")]

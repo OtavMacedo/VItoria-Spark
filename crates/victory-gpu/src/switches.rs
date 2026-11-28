@@ -137,6 +137,13 @@ pub(crate) static RELEASE_FREED: Toggle = Toggle::flag("VICTORY_RELEASE_FREED");
 /// under both arms and the same copies go under either.
 pub(crate) static SWEEP_WALK: Toggle = Toggle::flag("VICTORY_SWEEP_WALK");
 
+/// `VICTORY_EVICT_HOLD_FRAMES` (`crate::evict_hold`): the frames a host
+/// copy let go at an unmapping is kept before it is dropped, 0 off. Each
+/// letting go decides on its own and what is held is dropped under either
+/// value.
+pub(crate) static EVICT_HOLD: Toggle =
+    Toggle::new("VICTORY_EVICT_HOLD_FRAMES", crate::evict_hold::hold_frames);
+
 /// `VICTORY_COMMIT_SHRINK_PCT` (`crate::commitshrink`): the percent of the
 /// commit limit past which the host's caches of the PC's memory are kept
 /// short, 0 off. Its tight state is read only with the switch on, and what
@@ -191,7 +198,7 @@ fn no_sweep(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 32] = [
+pub static TABLE: [Entry; 33] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -365,6 +372,15 @@ pub static TABLE: [Entry; 32] = [
             "VICTORY_TEXTURE_SWEEP",
             no_sweep,
             "with the sweep off nothing is looked for at an unmapping",
+        )],
+    },
+    Entry {
+        toggle: &EVICT_HOLD,
+        part: "copias",
+        inert: &[(
+            "VICTORY_TEXTURE_SWEEP",
+            no_sweep,
+            "with the sweep off no host copy is let go at an unmapping",
         )],
     },
     Entry {
