@@ -70,6 +70,10 @@ pub(crate) static HEAP_PASS_MARKED: Toggle = Toggle::flag("VICTORY_HEAP_PASS_MAR
 pub(crate) static HEAP_SCAN_ALT: Toggle =
     Toggle::new("VICTORY_HEAP_SCAN_ALT", crate::heap_pass::scan_alt_every);
 
+/// `VICTORY_BUFFER_SWEEP` (`crate::span_cache`): what it keeps is made from
+/// the pass's own map whenever it turns on, and dropped while it is off.
+pub(crate) static BUFFER_SWEEP: Toggle = Toggle::flag("VICTORY_BUFFER_SWEEP");
+
 /// `VICTORY_HEAP_LOCKS` (`crate::descriptor::host`).
 pub(crate) static HEAP_LOCKS: Toggle = Toggle::flag("VICTORY_HEAP_LOCKS");
 
@@ -133,8 +137,14 @@ fn unmarked(value: Option<&str>) -> bool {
     !value.is_some_and(|v| matches!(v.trim(), "1" | "alt"))
 }
 
+/// `VICTORY_HEAP_PASS_MARKED=1`: the pass over the heap's buffer views is
+/// always the marked one.
+fn marked(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim() == "1")
+}
+
 /// Every switch above.
-pub static TABLE: [Entry; 25] = [
+pub static TABLE: [Entry; 26] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -162,6 +172,15 @@ pub static TABLE: [Entry; 25] = [
             "VICTORY_HEAP_PASS_MARKED",
             unmarked,
             "the compare it spaces out is the marked pass's; the pass without it has none",
+        )],
+    },
+    Entry {
+        toggle: &BUFFER_SWEEP,
+        part: "preparo",
+        inert: &[(
+            "VICTORY_HEAP_PASS_MARKED",
+            marked,
+            "the marked pass keeps its spans already; the cache is the pass without marks'",
         )],
     },
     Entry {
@@ -397,6 +416,7 @@ mod tests {
         assert!(uploads_on_copy_queue(Some("3")) && !uploads_on_copy_queue(Some("1")));
         assert!(unmarked(None) && unmarked(Some("0")) && unmarked(Some("2")));
         assert!(!unmarked(Some("1")) && !unmarked(Some(" alt ")));
+        assert!(marked(Some("1")) && !marked(Some("alt")) && !marked(None));
         assert!(!uploads_on_copy_queue(None));
         let mut names: Vec<&str> = TABLE.iter().map(|e| e.toggle.name()).collect();
         names.sort_unstable();
