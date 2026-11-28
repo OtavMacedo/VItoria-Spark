@@ -99,6 +99,11 @@ pub(crate) static GUARD_REST: Toggle = Toggle::new("VICTORY_GUARD_REST", crate::
 /// faults four times in a frame is left open, 0 off. As above.
 pub(crate) static GUARD_HOT: Toggle = Toggle::new("VICTORY_GUARD_HOT", crate::watch::hot_frames);
 
+/// `VICTORY_NOTHING_NEW_FAST` (`crate::shadow`'s looks): each look at a
+/// copy's pending ranges or pages' notes decides on its own; the flag it
+/// reads is kept under both arms.
+pub(crate) static NOTHING_NEW_FAST: Toggle = Toggle::flag("VICTORY_NOTHING_NEW_FAST");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -122,7 +127,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 24] = [
+pub static TABLE: [Entry; 25] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -245,6 +250,11 @@ pub static TABLE: [Entry; 24] = [
     Entry {
         toggle: &LIST_REAPER,
         part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &NOTHING_NEW_FAST,
+        part: "copias",
         inert: &[],
     },
 ];
