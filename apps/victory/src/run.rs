@@ -458,12 +458,14 @@ fn from_hex(s: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
-/// `VICTORY_OUTPUT_RESOLUTION=1080p|1440p|<W>x<H>` (16:9; off by default):
-/// a Series X output of that size instead of 3840x2160, made by the title
-/// itself, with its scene at `VICTORY_SCENE_SCALE` of it (`0.75` or `3/4`,
-/// 0.5 to 1; default 1, the scene at the output's size). Needs a known build
-/// with its output sites and the Series X profile. Returns the output, the
-/// scene and the patches.
+/// `VICTORY_OUTPUT_RESOLUTION=1440p|<W>x<H>` (16:9, 2560x1440 to 3840x2160;
+/// off by default): a Series X output of that size instead of 3840x2160,
+/// made by the title itself, with its scene at `VICTORY_SCENE_SCALE` of it
+/// (`0.75` or `3/4`, 0.5 to 1; default 1, the scene at the output's size).
+/// A smaller output is refused, as the title stops at startup with one: a
+/// 1920x1080 scene is `1440p` with `3/4`. Needs a known build with its
+/// output sites and the Series X profile. Returns the output, the scene and
+/// the patches.
 #[cfg(windows)]
 fn output_size_patches(
     build: Option<&victory_game::KnownBuild>,
@@ -532,7 +534,7 @@ mod output_tests {
     #[test]
     fn scanout_reservations() {
         assert_eq!(scanout_reservation_bytes(LEGACY_CANVAS).unwrap(), 64 << 20);
-        for (text, mib) in [("1440p", 30), ("1080p", 18)] {
+        for (text, mib) in [("1440p", 30), ("3200x1800", 48)] {
             let size = OutputSize::parse(text).unwrap();
             let bytes = scanout_reservation_bytes(size).unwrap();
             assert_eq!(bytes % (2 << 20), 0, "{text}");

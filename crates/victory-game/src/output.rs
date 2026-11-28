@@ -14,6 +14,14 @@ const STOCK_DISPLAY_MODE: [u8; 16] = [0, 15, 0, 0, 112, 8, 0, 0, 60, 0, 0, 0, 1,
 const STOCK_SCANOUT_RESERVATION: [u8; 5] = [0xb9, 0, 0, 0, 4];
 /// The stock scene scale, 2/3 (a 2560x1440 scene in a 3840x2160 output).
 const STOCK_SCENE_SCALE: f32 = 2.0 / 3.0;
+/// The smallest output the title makes. Its mode table keeps a 2560x1440
+/// row below the patched one and it takes the largest, so with a smaller
+/// display mode it still makes 2560x1440 scanout buffers: they overflow the
+/// smaller reservation and its allocation check stops it at startup.
+pub const SMALLEST_OUTPUT: OutputSize = OutputSize {
+    width: 2560,
+    height: 1440,
+};
 /// The size the title's frontend lays its screens out for.
 pub const LEGACY_CANVAS: OutputSize = OutputSize {
     width: 3840,
@@ -49,9 +57,11 @@ pub struct OutputSize {
 }
 
 impl OutputSize {
-    /// Parses `1080p`, `1440p` or `<width>x<height>`. The size must be 16:9
-    /// (the frontend lays out for 16:9), even, and from 1280x720 up to the
-    /// stock 3840x2160 (the scanout reservation is never grown).
+    /// Parses `1440p` or `<width>x<height>`. The size must be 16:9 (the
+    /// frontend lays out for 16:9), even, and from [`SMALLEST_OUTPUT`] up to
+    /// the stock 3840x2160 (the scanout reservation is never grown). A
+    /// smaller size, `1080p` included, is an error that names the 1440p
+    /// output with a scaled scene instead.
     pub fn parse(text: &str) -> Result<OutputSize, String> {
         let text = text.trim();
         let size = match text.to_ascii_lowercase().as_str() {
@@ -66,11 +76,11 @@ impl OutputSize {
             other => {
                 let (w, h) = other
                     .split_once('x')
-                    .ok_or_else(|| format!("output size is not 1080p, 1440p or WxH: {text}"))?;
+                    .ok_or_else(|| format!("output size is not 1440p or WxH: {text}"))?;
                 let number = |s: &str| {
                     s.trim()
                         .parse::<u32>()
-                        .map_err(|_| format!("output size is not 1080p, 1440p or WxH: {text}"))
+                        .map_err(|_| format!("output size is not 1440p or WxH: {text}"))
                 };
                 OutputSize {
                     width: number(w)?,
@@ -82,9 +92,27 @@ impl OutputSize {
         if u64::from(width) * 9 != u64::from(height) * 16 {
             return Err(format!("output size {width}x{height} is not 16:9"));
         }
-        if !(1280..=LEGACY_CANVAS.width).contains(&width) || width % 2 != 0 || height % 2 != 0 {
+        if width % 2 != 0 || height % 2 != 0 || width > LEGACY_CANVAS.width {
             return Err(format!(
-                "output size {width}x{height} is not even and within 1280x720..3840x2160"
+                "output size {width}x{height} is not even and within 2560x1440..3840x2160"
+            ));
+        }
+        if width < SMALLEST_OUTPUT.width {
+            // Both are 16:9, so the widths give the scene scale.
+            let common = gcd(width, SMALLEST_OUTPUT.width);
+            let hint = if width * 2 >= SMALLEST_OUTPUT.width {
+                format!(
+                    "; for a {width}x{height} scene use VICTORY_OUTPUT_RESOLUTION=1440p \
+                     VICTORY_SCENE_SCALE={}/{}",
+                    width / common,
+                    SMALLEST_OUTPUT.width / common
+                )
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "output size {width}x{height} is below 2560x1440, which the title cannot make \
+                 (it stops at startup){hint}"
             ));
         }
         Ok(size)
@@ -98,6 +126,13 @@ impl OutputSize {
             height: (self.height as f32 * scale) as u32,
         }
     }
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// Parses a scene scale: a decimal (`0.75`) or a fraction (`3/4`), from 0.5
@@ -196,22 +231,46 @@ mod tests {
             width: w,
             height: h,
         };
-        assert_eq!(OutputSize::parse("1080p"), Ok(size(1920, 1080)));
         assert_eq!(OutputSize::parse(" 1440P "), Ok(size(2560, 1440)));
-        assert_eq!(OutputSize::parse("1600x900"), Ok(size(1600, 900)));
+        assert_eq!(OutputSize::parse("3200x1800"), Ok(size(3200, 1800)));
         assert_eq!(OutputSize::parse("3840X2160"), Ok(LEGACY_CANVAS));
         for bad in [
             "",
             "720",
             "1920x1200",
             "5120x2880",
-            "1024x576",
             "1x",
             "axb",
-            "1922x1081",
+            "2562x1441",
         ] {
             assert!(OutputSize::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    /// Below 2560x1440 the title stops at startup: refused, naming the
+    /// 1440p output with the scene scale that gives a scene of that size.
+    #[test]
+    fn refuses_outputs_below_1440p() {
+        let hint = |text| OutputSize::parse(text).unwrap_err();
+        let error = hint("1080p");
+        assert!(error.contains("1920x1080 is below 2560x1440"), "{error}");
+        assert!(
+            error.ends_with("VICTORY_OUTPUT_RESOLUTION=1440p VICTORY_SCENE_SCALE=3/4"),
+            "{error}"
+        );
+        assert!(hint("1600x900").ends_with("VICTORY_SCENE_SCALE=5/8"));
+        assert!(hint("1280x720").ends_with("VICTORY_SCENE_SCALE=1/2"));
+        // Below half of 1440p no scene scale reaches it.
+        assert!(!hint("1024x576").contains("VICTORY_SCENE_SCALE"));
+        // The suggestion holds: a 1440p output at 3/4 has a 1080p scene.
+        let scale = parse_scene_scale("3/4").unwrap();
+        assert_eq!(
+            SMALLEST_OUTPUT.scene(scale),
+            OutputSize {
+                width: 1920,
+                height: 1080
+            }
+        );
     }
 
     #[test]
@@ -228,25 +287,26 @@ mod tests {
     /// The scene the title computes (scale times output, truncated).
     #[test]
     fn scene_sizes() {
+        let size = |width, height| OutputSize { width, height };
         let out = |s| OutputSize::parse(s).unwrap();
         assert_eq!(out("1440p").scene(1.0), out("1440p"));
-        assert_eq!(out("1440p").scene(0.75), out("1080p"));
-        assert_eq!(out("1080p").scene(2.0 / 3.0), out("1280x720"));
+        assert_eq!(out("1440p").scene(0.75), size(1920, 1080));
+        assert_eq!(out("1440p").scene(0.5), size(1280, 720));
         assert_eq!(LEGACY_CANVAS.scene(STOCK_SCENE_SCALE), out("1440p"));
     }
 
     #[test]
     fn output_patches_write_the_size() {
-        let size = OutputSize::parse("1080p").unwrap();
-        let patches = output_patches(&SITES, size, 0.75, 0x0120_0000);
+        let size = OutputSize::parse("1440p").unwrap();
+        let patches = output_patches(&SITES, size, 0.75, 0x01e0_0000);
         assert_eq!(patches.len(), 4);
         for p in &patches {
             assert_eq!(p.expect.len(), p.write.len(), "{}", p.name);
         }
         let mode = &patches[0].write;
-        assert_eq!(mode[..8], [0x80, 7, 0, 0, 0x38, 4, 0, 0]);
+        assert_eq!(mode[..8], [0, 0x0a, 0, 0, 0xa0, 5, 0, 0]);
         assert_eq!(mode[8..], STOCK_DISPLAY_MODE[8..]);
-        assert_eq!(patches[1].write, [0xb9, 0, 0, 0x20, 1]);
+        assert_eq!(patches[1].write, [0xb9, 0, 0, 0xe0, 1]);
         assert_eq!(patches[2].expect, STOCK_SCENE_SCALE.to_le_bytes());
         assert_eq!(patches[2].write, 0.75f32.to_le_bytes());
         let load = &patches[3].write;

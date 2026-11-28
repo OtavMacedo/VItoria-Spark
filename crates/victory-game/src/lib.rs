@@ -95,7 +95,7 @@ mod tests {
             // The output sites overlap neither each other nor a code patch:
             // all are applied together and checked before any is written.
             if let Some(sites) = &build.output {
-                let size = output::OutputSize::parse("1080p").unwrap();
+                let size = output::OutputSize::parse("1440p").unwrap();
                 let mut runs: Vec<(u32, usize)> = output::output_patches(sites, size, 1.0, 0)
                     .iter()
                     .map(|p| (p.rva, p.write.len()))
