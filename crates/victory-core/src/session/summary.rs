@@ -226,6 +226,10 @@ pub struct Rate {
     pub making: f64,
     /// Write faults the guards of view memory took, per frame.
     pub guard_faults: f64,
+    /// The guards' lock, ms a frame of all threads: waiting for it, and
+    /// holding it (diagnostics builds; 0 in others).
+    pub guard_lock_wait_ms: f64,
+    pub guard_lock_held_ms: f64,
 }
 
 /// Counts by key, with a detail kept from the first time and how many
@@ -468,6 +472,10 @@ fn medians_of(world: bool, rates: &[&Rate]) -> Medians {
         textures_mb: m(|r| r.textures_mb),
         copy_back_mb: m(|r| r.copy_back_mb),
         guard_faults: m(|r| r.guard_faults),
+        // Measured only in diagnostics builds, where it is never 0.
+        guard_lock: m(|r| r.guard_lock_held_ms)
+            .filter(|held| *held > 0.0)
+            .and_then(|held| Some((m(|r| r.guard_lock_wait_ms)?, held))),
     }
 }
 
@@ -489,6 +497,9 @@ pub struct Medians {
     pub textures_mb: Option<f64>,
     pub copy_back_mb: Option<f64>,
     pub guard_faults: Option<f64>,
+    /// The guards' lock, ms a frame waited and held; `None` where it is
+    /// not measured.
+    pub guard_lock: Option<(f64, f64)>,
 }
 
 impl Summary {
@@ -791,6 +802,8 @@ impl Summary {
             copy_back_mb: n("spark.copy_back_mb"),
             making: n("spark.making"),
             guard_faults: n("spark.guard_faults"),
+            guard_lock_wait_ms: n("spark.guard_lock_wait_ms"),
+            guard_lock_held_ms: n("spark.guard_lock_held_ms"),
         });
     }
 
@@ -978,6 +991,8 @@ impl Summary {
                 .opt_num("textures_mb", m.textures_mb)
                 .opt_num("copy_back_mb", m.copy_back_mb)
                 .opt_num("guard_faults", m.guard_faults)
+                .opt_num("guard_lock_wait_ms", m.guard_lock.map(|l| l.0))
+                .opt_num("guard_lock_held_ms", m.guard_lock.map(|l| l.1))
                 .finish()
         };
         let medians = medians_json(self.medians());
@@ -1440,6 +1455,30 @@ mod tests {
             message: "frame rate",
             fields,
         }
+    }
+
+    /// The guards' faults and lock reach the medians; the lock only where
+    /// it was measured (a build without diagnostics says 0 held).
+    #[test]
+    fn the_guards_lock_reaches_the_medians_only_where_measured() {
+        let mut s = Summary::new();
+        for (i, held) in [9.0, 11.0, 10.0].into_iter().enumerate() {
+            let mut f = rate(10.0, 80.0, 40.0, 0.0);
+            f.push(("spark.guard_faults", Value::F64(500.0)));
+            f.push(("spark.guard_lock_wait_ms", Value::F64(held / 2.0)));
+            f.push(("spark.guard_lock_held_ms", Value::F64(held)));
+            s.event(i as f64, &info(&f));
+        }
+        let json = s.to_json("{}");
+        assert!(
+            json.contains(r#""guard_faults":500,"guard_lock_wait_ms":5,"guard_lock_held_ms":10}"#),
+            "{json}"
+        );
+        let mut s = Summary::new();
+        let mut f = rate(10.0, 80.0, 40.0, 0.0);
+        f.push(("spark.guard_lock_held_ms", Value::F64(0.0)));
+        s.event(0.0, &info(&f));
+        assert_eq!(s.medians().guard_lock, None);
     }
 
     #[test]

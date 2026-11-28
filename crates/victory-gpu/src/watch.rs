@@ -32,6 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
+mod lockstat;
 mod rest;
 
 pub(crate) use rest::{hot_frames, rest_us};
@@ -792,7 +793,7 @@ fn failed_asking(start: usize, end: usize) {
     // SAFETY: a valid out pointer of the right size.
     let n = unsafe { VirtualQuery(start as *const _, &mut info, size_of_val(&info)) };
     let (protected, clean, absent, viewed, aliased) = {
-        let g = guards();
+        let g = guards_by(lockstat::Who::Asking);
         let b = start / BLOCK;
         (
             g.protected.contains(&b),
@@ -867,7 +868,7 @@ fn known_view(start: usize) -> bool {
     if light() && PUBLISHED.all(first, first + 1) {
         return true;
     }
-    let g = guards();
+    let g = guards_by(lockstat::Who::Asking);
     g.protected.contains(&first)
         || g.absent.contains(&first)
         || (view_known() && g.viewed.contains(&first))
@@ -986,8 +987,22 @@ static GUARDS: Mutex<Guards> = Mutex::new(Guards {
     rests: rest::Rests::new(),
 });
 
-fn guards() -> std::sync::MutexGuard<'static, Guards> {
-    GUARDS.lock().unwrap_or_else(|e| e.into_inner())
+/// The guards' lock, taken by the runtime's calls ([`guards_by`]).
+fn guards() -> lockstat::Held<Guards> {
+    guards_by(lockstat::Who::Runtime)
+}
+
+/// The guards' lock, taken by `who`: diagnostics builds count how long it
+/// is waited for and held ([`lockstat`]).
+fn guards_by(who: lockstat::Who) -> lockstat::Held<Guards> {
+    lockstat::lock(&GUARDS, who)
+}
+
+/// The guards' lock per frame since the last call, for the frame-rate
+/// line: ms waited and ms held, all takers (0 without diagnostics); the
+/// diagnostics build logs them by taker.
+pub(crate) fn guards_lock_line(frames: f64) -> (f64, f64) {
+    lockstat::line(frames)
 }
 
 /// Blocks left open after a fault, per frame ([`rest`]).
@@ -1206,7 +1221,7 @@ static PUBLISHED: Bits = Bits::new();
 /// reports written: every other clean block was left clean by an asking
 /// before it, which did this.
 fn publish(_noted: &Journal, written: &[usize], start: usize, end: usize, holes: bool) {
-    let mut g = guards();
+    let mut g = guards_by(lockstat::Who::Asking);
     let g = &mut *g;
     for &page in written {
         let block = page * PAGE / BLOCK;
@@ -1366,7 +1381,7 @@ fn look_at_holes(most: usize) {
         return;
     };
     let part: Vec<usize> = {
-        let g = guards();
+        let g = guards_by(lockstat::Who::Asking);
         if g.holes.is_empty() {
             return;
         }
@@ -1388,7 +1403,7 @@ fn look_at_holes(most: usize) {
         if !filled && placeholder(block) {
             continue;
         }
-        let mut g = guards();
+        let mut g = guards_by(lockstat::Who::Asking);
         // (Told of since the part was taken: forgotten already.)
         if !g.holes.contains(&block) {
             continue;
@@ -1503,7 +1518,7 @@ pub(crate) fn unchanged_known(start: usize, end: usize, base: usize, copied: &[u
     }
     // (The journal's lock is let go first: `writes_as` takes it, then the
     // guards'.)
-    let g = guards();
+    let g = guards_by(lockstat::Who::Asking);
     let blocks = last - first;
     g.protected.range(first..last).count() == blocks && g.clean.range(first..last).count() == blocks
 }
@@ -1645,7 +1660,7 @@ fn guard_at(start: usize, end: usize, now: u64, keep: u64) -> Option<Vec<usize>>
     static ASK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let known =
         !*ASK.get_or_init(|| std::env::var_os("VICTORY_GUARD_ASK").is_some_and(|v| v == "1")) && {
-            let g = guards();
+            let g = guards_by(lockstat::Who::Asking);
             let first = start / BLOCK;
             g.protected.contains(&first)
                 || g.absent.contains(&first)
@@ -1656,7 +1671,7 @@ fn guard_at(start: usize, end: usize, now: u64, keep: u64) -> Option<Vec<usize>>
         return None;
     }
     install();
-    let mut g = guards();
+    let mut g = guards_by(lockstat::Who::Asking);
     // Blocks a write fault has just opened are reported written and left
     // open ([`rest`]); with both switches off none is, and what was noted
     // goes.
@@ -2302,7 +2317,7 @@ fn install() {
         // Held across both checks: another thread may have opened the block
         // since this one faulted, and a copy may have guarded it again since
         // (then it is ours again, not read-only for some other reason).
-        let mut g = guards();
+        let mut g = guards_by(lockstat::Who::Fault);
         if open(&mut g, at, at + 1) {
             // Left open for a moment ([`rest`]).
             let rests = rest::Cfg::now();

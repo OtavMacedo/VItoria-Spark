@@ -279,6 +279,8 @@ impl AbStats {
                 .opt_num("draws", self.part(i, |r| r.draws))
                 .opt_num("dropped", self.part(i, |r| r.dropped))
                 .opt_num("guard_faults", self.part(i, |r| r.guard_faults))
+                .opt_num("guard_lock_wait_ms", self.part(i, |r| r.guard_lock_wait_ms))
+                .opt_num("guard_lock_held_ms", self.part(i, |r| r.guard_lock_held_ms))
                 .finish()
         };
         let verdict = |v: Option<Paired>| match v {
