@@ -347,22 +347,24 @@ fn feature_levels(data: *mut c_void) -> HRESULT {
     }
 }
 
-/// Device methods 0x1c8 and 0x218 (`SLOT`). The title calls both
+/// Device methods 0x1c8 (`DeserializeGraphicsPipelineStateX`) and 0x218
+/// (`DeserializeComputePipelineStateX`), `SLOT`. The title calls both
 /// (title+0x2477578 and title+0x24800d5) as `(this, description, interface
 /// id, out)`, asks for `ID3D12PipelineState`, and on success keeps the
 /// object `out` names and draws with it; on failure it goes without that
-/// pipeline, silently. What the descriptions hold is not known: the calls
-/// fail as they always did, with `out` null, and the first ones log the
-/// description's words and what its first word points at, so that the two
-/// methods can be written. With `SPARK_PIPELINES_X=1` each distinct
+/// pipeline, silently. With `VICTORY_PIPELINES_X=1` (off unless set) 0x218
+/// hands out the compute pipeline of the container its program names
+/// (`pipeline::console`). Every other call fails as it always did, with
+/// `out` null, and the first ones log why, the description's words and
+/// what its first word points at. With `SPARK_PIPELINES_X=1` each distinct
 /// description is also kept whole in the session's folder, with the blocks
 /// it names ([`keep_description`]).
-/// shortcut: not implemented. Answering `S_OK` here without making the
+/// shortcut: 0x1c8 is not implemented. Answering `S_OK` without making the
 /// pipeline would hand the title whatever its stack held as an object.
-extern "system" fn unknown_pipeline<const SLOT: usize>(
+extern "system" fn console_pipeline<const SLOT: usize>(
     _: This,
     desc: *const u8,
-    _iid: *const Iid,
+    #[cfg_attr(not(windows), allow(unused_variables))] iid: *const Iid,
     out: *mut This,
 ) -> HRESULT {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -372,6 +374,17 @@ extern "system" fn unknown_pipeline<const SLOT: usize>(
         // SAFETY: the title's out pointer (a local of its own).
         unsafe { *out = std::ptr::null() };
     }
+    #[cfg(windows)]
+    let why = if SLOT == 0x218 {
+        match pipeline::console::compute(desc, iid, out) {
+            Ok(hr) => return hr,
+            Err(why) => why,
+        }
+    } else {
+        pipeline::console::graphics(desc)
+    };
+    #[cfg(not(windows))]
+    let why = "not implemented";
     if calls <= 4 || calls.is_power_of_two() {
         // Sixteen 64-bit words at `at`, read through the kernel: neither
         // pointer is known to be mapped.
@@ -394,6 +407,7 @@ extern "system" fn unknown_pipeline<const SLOT: usize>(
         tracing::warn!(
             slot = format_args!("{:#x}", SLOT),
             calls,
+            why,
             description = format_args!("{description:x?}"),
             first_points_at = format_args!("{first:x?}"),
             "a pipeline creation method that is not implemented: the title goes without this pipeline"
@@ -490,10 +504,10 @@ static FUNCTIONS: Table<160> = {
     f[39] = query::create as *const (); // 0x138
     f[41] = signature::create as *const (); // 0x148
     f[48] = queue::create_x as *const (); // 0x180
-    f[57] = unknown_pipeline::<0x1c8> as *const (); // 0x1c8
+    f[57] = console_pipeline::<0x1c8> as *const (); // 0x1c8
     f[61] = descriptor::create_sampler_x as *const (); // 0x1e8
     f[62] = pipeline::create_compute_x as *const (); // 0x1f0
-    f[67] = unknown_pipeline::<0x218> as *const (); // 0x218
+    f[67] = console_pipeline::<0x218> as *const (); // 0x218
     f[69] = object::ignore as *const (); // 0x228 debug error filter
     f[70] = descriptor::create_placed_srv as *const (); // 0x230
     f[71] = descriptor::create_placed_uav as *const (); // 0x238
