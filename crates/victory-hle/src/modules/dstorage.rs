@@ -20,7 +20,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::{CStr, c_char, c_void};
-use std::os::windows::fs::FileExt;
 use std::os::windows::io::FromRawHandle;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
@@ -30,6 +29,8 @@ use victory_formats::bcpack::{self, Tables};
 use super::xasync::{E_INVALIDARG, E_NOTIMPL, E_PENDING};
 use super::xgameruntime::{Guid, HRESULT, Methods, Object, S_OK, add_ref, missing, put};
 use crate::{HleModule, hle_export};
+
+mod direct;
 
 /// The factory interface the title asks for.
 const FACTORY: Guid = Guid::new(
@@ -145,7 +146,8 @@ extern "system" fn open_file(_: Factory, path: *const u16, iid: *const Guid, out
     tracing::info!(path = name, iid = iid_text(iid), "dstorage: file opened");
     // SAFETY: a handle we just opened and nobody else owns.
     let file = unsafe { std::fs::File::from_raw_handle(handle) };
-    let file = Instance::create(Object::new("dstorage file", &FILE_VTABLE), File { file });
+    let files = direct::Files::new(file, direct::Io::chosen());
+    let file = Instance::create(Object::new("dstorage file", &FILE_VTABLE), File { files });
     WALLS_FILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -262,7 +264,7 @@ static FACTORY_VTABLE: Methods<16> = Methods([
 // Files.
 
 struct File {
-    file: std::fs::File,
+    files: direct::Files,
 }
 
 static FILE_VTABLE: Methods<8> = Methods([
@@ -603,6 +605,17 @@ impl Lanes {
                 "dstorage: last {:.1} s",
                 elapsed.as_secs_f64()
             );
+            if direct::Io::chosen() == direct::Io::Direct {
+                let [reads, read_bytes, bounced, fallbacks] = direct::take_counts();
+                tracing::info!(
+                    reads,
+                    mb = read_bytes / 1_000_000,
+                    bounced,
+                    fallbacks,
+                    "dstorage: read past the file cache in the last {:.1} s (VICTORY_DSTORAGE_IO=direct; bounced: through the aligned buffer; fallbacks: handles read through the cache)",
+                    elapsed.as_secs_f64()
+                );
+            }
             let (ms, bytes, options) = std::mem::take(&mut self.slowest);
             let slow = std::mem::take(&mut self.slow);
             tracing::info!(
@@ -1216,16 +1229,16 @@ fn read_into(request: &Request, out: &mut [u8]) -> Result<(), HRESULT> {
         return Ok(());
     }
     // SAFETY: a file object we created; the title keeps it open.
-    let file = &unsafe { &*request.source.cast::<Instance<File>>() }
+    let files = &unsafe { &*request.source.cast::<Instance<File>>() }
         .state
-        .file;
+        .files;
     let started = std::time::Instant::now();
     let mut done = 0;
     let result = loop {
         if done == out.len() {
             break Ok(());
         }
-        match file.seek_read(&mut out[done..], request.offset + done as u64) {
+        match files.read_at(&mut out[done..], request.offset + done as u64) {
             Ok(0) => break Err(END_OF_FILE),
             Ok(n) => done += n,
             Err(error) => break Err(from_win32(&error)),
