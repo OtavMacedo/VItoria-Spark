@@ -123,6 +123,11 @@ impl PreludeUpload {
     /// reads the staging buffer when the card runs it: the list that holds
     /// `self` keeps the buffer alive until then.
     pub(crate) fn record(&self, list: &ID3D12GraphicsCommandList) {
+        // Only a texture with a staging buffer is held for a prelude, and
+        // the buffer stays as long as the staging state.
+        let Some(buffer) = self.staging.buffer() else {
+            return;
+        };
         for (i, footprint) in self.staging.footprints.iter().enumerate() {
             let to = D3D12_TEXTURE_COPY_LOCATION {
                 // SAFETY: a borrowed pointer the location never releases.
@@ -134,7 +139,7 @@ impl PreludeUpload {
             };
             let from = D3D12_TEXTURE_COPY_LOCATION {
                 // SAFETY: as above.
-                pResource: unsafe { std::mem::transmute_copy(&self.staging.buffer) },
+                pResource: unsafe { std::mem::transmute_copy(buffer) },
                 Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
                 Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                     PlacedFootprint: *footprint,

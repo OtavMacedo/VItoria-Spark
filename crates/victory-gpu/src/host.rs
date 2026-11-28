@@ -3202,6 +3202,13 @@ enum Step {
     /// Brings a texture's staging buffer up to date: once per submission,
     /// whichever lists sample it, until a `Copy` or `Run` intervenes.
     Texture(std::sync::Arc<crate::texture::Staging>),
+    /// An upload detiled on the card (`crate::detile`): title memory goes
+    /// into the upload's slice and its detile ahead of the submission's
+    /// lists, every time the list is submitted.
+    GpuTexture(
+        std::sync::Arc<crate::texture::Staging>,
+        std::sync::Arc<crate::detile::Upload>,
+    ),
 }
 
 /// What a list does on the CPU when it is submitted: copies between host
@@ -3945,7 +3952,7 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
                         return Some(WHY_READ);
                     }
                 }
-                Step::Texture(staging) => {
+                Step::Texture(staging) | Step::GpuTexture(staging, _) => {
                     let (at, len) = staging.memory();
                     if touches(written, at, at + len) {
                         if count {
@@ -7411,6 +7418,17 @@ impl Host {
         }
         part = prep_part(1, part);
         batch.flush();
+        // The card's detile of what the steps filled goes ahead of every
+        // list of the submission, in the same call (with timing on, in the
+        // first group).
+        if crate::detile::on()
+            && let Some(pre) = crate::detile::pre_list()
+        {
+            lists.insert(0, Some(pre));
+            for first in firsts.iter_mut().skip(1) {
+                *first += 1;
+            }
+        }
         crate::watch::ask_once_end();
         part = prep_part(2, part);
         // The pass over the view heap, if it ran beside: done before any
@@ -7454,6 +7472,9 @@ impl Host {
                 self.queue.ExecuteCommandLists(&lists);
                 self.queue.Signal(&self.fence, *submitted)
             };
+            if crate::detile::on() {
+                crate::detile::sent(*submitted);
+            }
             self.card_sent();
             prep_part(5, prepared);
             if let Err(e) = signalled {
@@ -7560,6 +7581,10 @@ impl Host {
                 }
             }
             let _ = (i, started);
+        }
+        // The last group's value: every group of this submission is behind it.
+        if crate::detile::on() {
+            crate::detile::sent(*submitted);
         }
         let _ = &firsts;
         FINISHED.store(this_submission, Ordering::Release);
@@ -9664,6 +9689,14 @@ impl HostList {
                     }
                     continue;
                 }
+                Step::GpuTexture(staging, upload) => {
+                    // Filled whatever a check says: the list's copy reads
+                    // this slice. Later checks of the texture in this
+                    // submission find it current.
+                    batch.texture_due(staging);
+                    staging.gpu_fill(upload);
+                    continue;
+                }
             };
             preparing(0, started.elapsed().as_micros() as u64);
             preparing(1, copied as u64);
@@ -11062,6 +11095,13 @@ pub(crate) fn legal_for(flags: u32, state: u32) -> u32 {
 }
 
 impl Host {
+    /// The last value the card reached on the host queue's fence: every
+    /// submission signalled at or below it has run.
+    pub(crate) fn completed(&self) -> u64 {
+        // SAFETY: a plain query on our fence.
+        unsafe { self.fence.GetCompletedValue() }
+    }
+
     /// The card's memory as the system accounts it to this process, in
     /// bytes: the budget and the use of the card's own memory, then of the
     /// PC's memory shared with the card (where the system moves what does

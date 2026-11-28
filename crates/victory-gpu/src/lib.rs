@@ -41,6 +41,8 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(windows)]
 mod compose;
 pub mod descriptor;
+#[cfg(windows)]
+mod detile;
 pub mod device;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod dirty_ranges;

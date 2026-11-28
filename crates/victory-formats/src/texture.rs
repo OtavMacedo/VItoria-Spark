@@ -32,6 +32,10 @@
 
 use std::sync::OnceLock;
 
+mod copy_table;
+
+pub use copy_table::{CopyRow, CopyRun, CopyTable};
+
 /// A swizzle mode, by its hardware number (addrlib's `ADDR_SW_*` order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Swizzle(pub u32);
