@@ -132,6 +132,104 @@ pub(crate) fn wanted() -> bool {
     })
 }
 
+/// The texture size cap, `VICTORY_TEXTURE_MAX_DIM=<pixels>` (256 at the
+/// least; unset, 0 or not a number: none). It works through levels on
+/// demand (`VICTORY_LEVELS_ON_DEMAND=1`; without it the cap does nothing,
+/// and the log says so): the levels of a texture made level by level whose
+/// width or height is over the cap are never held ([`cap_levels`],
+/// `texture.rs` `held_levels`), so they get no tiles and its views start at
+/// the first level within the cap (a shader that samples it gets that
+/// level, sharp to the cap; one that asks for its size gets that level's).
+/// A texture the title places in memory and fills whose level 0 is over
+/// the cap is made level by level even when it holds all its levels
+/// (`resource.rs` `hosted`), unless another texture of the host's lies in
+/// its memory (`resource.rs` `alias_of`). The title still sees its texture
+/// as it described it: size, levels, format, layout and memory. A copy or a
+/// resolve by the card still gives every level its memory (`make_whole`).
+///
+/// For cards whose memory cannot hold the title's textures at full size:
+/// each level cut is three quarters of such a texture's bytes. Read once,
+/// and not in the `SPARK_AB` table: whether a texture is made level by
+/// level is decided when its host copy is made, and lasts as long.
+/// After Androtim/MiniVI commit 39751220 (`VICTORY_LEVELS_MAX_DIM`) and
+/// LooperSalty/AnyXboxX pull request #506 (`VICTORY_TEXTURE_MAX_SIZE` with
+/// levels on demand).
+pub(crate) fn max_dim() -> Option<u32> {
+    static MAX: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| {
+        let max = parse_max_dim(std::env::var("VICTORY_TEXTURE_MAX_DIM").ok().as_deref());
+        if let Some(max) = max {
+            if std::env::var_os("VICTORY_LEVELS_ON_DEMAND").is_some_and(|v| v == "1") {
+                tracing::info!(
+                    max,
+                    "texture levels over the size cap get no memory of the card (VICTORY_TEXTURE_MAX_DIM)"
+                );
+            } else {
+                tracing::warn!(
+                    max,
+                    "VICTORY_TEXTURE_MAX_DIM does nothing without VICTORY_LEVELS_ON_DEMAND=1"
+                );
+            }
+        }
+        max
+    })
+}
+
+fn parse_max_dim(value: Option<&str>) -> Option<u32> {
+    value
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&max| max > 0)
+        .map(|max| max.max(256))
+}
+
+/// Whether a texture of `width` x `height` texels has a level 0 over the
+/// size cap ([`max_dim`]).
+pub(crate) fn over_max_dim(width: u64, height: u32) -> bool {
+    max_dim().is_some_and(|max| width > u64::from(max) || height > max)
+}
+
+/// Since the start: textures made level by level for the size cap alone
+/// ([`max_dim`]); judgements of held levels that the cap cut levels from.
+pub(crate) static CAPPED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+/// The held levels `held` (a bit a level) of a `width` x `height` texture
+/// of `mips` levels without those whose width or height is over `max_dim`,
+/// keeping the levels from `first_tail` on (the small levels the card
+/// packs into shared tiles, given together), and if none is left the
+/// smallest held level, so that a held texture never shows nothing.
+pub(crate) fn cap_levels(
+    held: u32,
+    width: u64,
+    height: u32,
+    mips: usize,
+    first_tail: usize,
+    max_dim: Option<u32>,
+) -> u32 {
+    let Some(limit) = max_dim else {
+        return held;
+    };
+    if held == 0 || mips == 0 {
+        return held;
+    }
+    let limit = u64::from(limit);
+    let mut kept = 0u32;
+    for mip in 0..mips.min(32) {
+        let bit = 1u32 << mip;
+        if held & bit == 0 {
+            continue;
+        }
+        let w = (width >> mip).max(1);
+        let h = (u64::from(height) >> mip).max(1);
+        if mip >= first_tail || (w <= limit && h <= limit) {
+            kept |= bit;
+        }
+    }
+    if kept == 0 {
+        kept = 1u32 << (31 - held.leading_zeros());
+    }
+    kept
+}
+
 fn parse_floor(value: Option<&str>) -> u64 {
     value
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -848,6 +946,14 @@ pub(crate) fn status() {
         small_when_full_mb(),
         blank[2],
     );
+    if let Some(max) = max_dim() {
+        tracing::info!(
+            "texture size cap {max} (VICTORY_TEXTURE_MAX_DIM): {} textures made level by level for the cap alone, \
+             {} judgements of held levels cut levels over it, since the start",
+            CAPPED[0].load(Ordering::Relaxed),
+            CAPPED[1].load(Ordering::Relaxed),
+        );
+    }
 }
 
 /// On the card, without the title: what levels on demand relies on, with
@@ -1834,6 +1940,52 @@ void look() {
         assert_eq!(parse_floor(Some("2048")), 2048 << 10);
         assert_eq!(parse_floor(Some(&(1u64 << 54).to_string())), u64::MAX);
         assert_eq!(parse_floor(Some(&u64::MAX.to_string())), u64::MAX);
+    }
+
+    /// The size cap: unset, 0 or junk none, 256 at the least.
+    #[test]
+    fn the_size_cap_is_read_with_a_floor() {
+        assert_eq!(parse_max_dim(None), None);
+        assert_eq!(parse_max_dim(Some("")), None);
+        assert_eq!(parse_max_dim(Some("0")), None);
+        assert_eq!(parse_max_dim(Some("nope")), None);
+        assert_eq!(parse_max_dim(Some("16")), Some(256));
+        assert_eq!(parse_max_dim(Some(" 1024 ")), Some(1024));
+    }
+
+    /// The levels over the cap leave the held ones; the packed small
+    /// levels stay, and a held texture keeps a level whatever the cap.
+    #[test]
+    fn the_size_cap_cuts_the_held_levels_over_it() {
+        let full = |n: usize| -> u32 { (1u32 << n) - 1 };
+        // No cap: as held.
+        assert_eq!(cap_levels(full(13), 4096, 4096, 13, 9, None), full(13));
+        // 4096x4096 under 1024: levels 0 (4096) and 1 (2048) go.
+        assert_eq!(
+            cap_levels(full(13), 4096, 4096, 13, 9, Some(1024)),
+            full(13) & !0b11
+        );
+        // 2048x1024 under 1024: level 0 only.
+        assert_eq!(
+            cap_levels(full(12), 2048, 1024, 12, 8, Some(1024)),
+            full(12) & !0b1
+        );
+        // Tall: the height counts too.
+        assert_eq!(
+            cap_levels(full(12), 256, 2048, 12, 8, Some(1024)),
+            full(12) & !0b1
+        );
+        // Within the cap: as held.
+        assert_eq!(cap_levels(full(10), 512, 512, 10, 6, Some(1024)), full(10));
+        // Only levels over the cap held: the smallest of them stays.
+        assert_eq!(cap_levels(0b11, 4096, 4096, 13, 9, Some(256)), 0b10);
+        // The packed levels stay whatever their size.
+        assert_eq!(
+            cap_levels(0b11 << 8, 4096, 4096, 10, 8, Some(256)),
+            0b11 << 8
+        );
+        // Nothing held stays nothing.
+        assert_eq!(cap_levels(0, 4096, 4096, 13, 9, Some(1024)), 0);
     }
 
     #[test]

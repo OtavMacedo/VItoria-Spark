@@ -1160,7 +1160,20 @@ impl Staging {
                 }
             }
         }
-        held
+        // The size cap (`VICTORY_TEXTURE_MAX_DIM`): levels over it are
+        // never the title's here.
+        let capped = crate::tiles::cap_levels(
+            held,
+            u64::from(self.layout.desc.width),
+            self.layout.desc.height,
+            mips.len(),
+            tail,
+            crate::tiles::max_dim(),
+        );
+        if capped != held {
+            crate::tiles::CAPPED[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        capped
     }
 
     /// Forgets what the staging buffer was last filled from: the next

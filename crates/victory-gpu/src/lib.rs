@@ -41,6 +41,8 @@ mod copystat;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(windows)]
+mod commitshrink;
+#[cfg(windows)]
 mod compose;
 pub mod descriptor;
 #[cfg(windows)]
@@ -61,6 +63,8 @@ mod fpsbox;
 pub mod frame;
 #[cfg(windows)]
 pub mod framelog;
+#[cfg(windows)]
+mod freed;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod heap_pass;
 #[cfg(windows)]
@@ -129,6 +133,8 @@ mod watch;
 
 #[cfg(windows)]
 pub use census::title_memory_reserved;
+#[cfg(windows)]
+pub use freed::{release_freed, title_memory_released};
 #[cfg(windows)]
 pub use host::on_failure;
 #[cfg(windows)]

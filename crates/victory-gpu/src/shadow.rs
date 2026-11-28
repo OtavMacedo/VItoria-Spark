@@ -27,6 +27,10 @@ use crate::watch::PAGE;
 mod looks;
 pub(crate) use looks::line as looks_line;
 
+/// Copies of memory the title gave up, let go at once (`crate::freed`).
+pub(crate) mod freed;
+pub(crate) use freed::freed_let_go;
+
 /// A title buffer's host copy.
 pub(crate) struct Shadow {
     pub(crate) buffer: ID3D12Resource,
