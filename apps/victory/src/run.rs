@@ -493,8 +493,8 @@ fn apply_title_patches(
     // scale with it, as the stock image pairs them.
     let scene_scale = path.as_ref().map(|(mode, _)| mode.scale());
     let output = output_size_patches(build, console, scene_scale)?;
-    if let Some((_, _, more)) = &output {
-        for p in more {
+    if let Some((size, _, more)) = &output {
+        for p in more.iter().chain(&legacy_ui_size(prepared, build, *size)) {
             patches.push((p.rva, p.expect.clone(), p.write.clone()));
             names.push(p.name.to_owned());
         }
@@ -613,6 +613,85 @@ fn output_size_patches(
         .context("VICTORY_OUTPUT_RESOLUTION: the output size of this build is not known")?;
     let patches = output_patches(sites, size, scale, scanout_reservation_bytes(size)?);
     Ok(Some((size, size.scene(scale), patches)))
+}
+
+/// `VICTORY_UI_LEGACY_SIZE=1` (off by default; only with
+/// `VICTORY_OUTPUT_RESOLUTION`): the title's legacy 3840x2160 UI size, the
+/// pair its settings screen loads ([`legacy_ui_size_rva`]), becomes the
+/// output's size, for every other reader of it as well. Prints what the
+/// image holds there and the code that reads it (each read's RVA and the
+/// eight bytes before its displacement, to tell the instruction); returns
+/// the patch only where the stock pair is in the file. Not switchable
+/// mid-run: the pair is part of the image before it is mapped.
+///
+/// [`legacy_ui_size_rva`]: victory_game::output::legacy_ui_size_rva
+#[cfg(windows)]
+fn legacy_ui_size(
+    prepared: &victory_loader::PreparedImage,
+    build: Option<&victory_game::KnownBuild>,
+    size: victory_game::output::OutputSize,
+) -> Option<victory_game::output::TitlePatch> {
+    use victory_game::output::{legacy_ui_size_patch, rip_relative_refs};
+    if std::env::var("VICTORY_UI_LEGACY_SIZE").as_deref() != Ok("1") {
+        return None;
+    }
+    let sites = build.and_then(|b| b.output.as_ref())?;
+    let patch = legacy_ui_size_patch(sites, size);
+    let rva = patch.rva;
+    const EXECUTE: u32 = 0x2000_0000;
+    let mut refs = Vec::new();
+    for section in prepared.info.sections.iter() {
+        if section.characteristics & EXECUTE == 0 {
+            continue;
+        }
+        let from = section.file_offset as usize;
+        let len = section.file_size.min(section.virtual_size.max(1)) as usize;
+        if let Some(code) = prepared.bytes.get(from..from + len) {
+            refs.extend(rip_relative_refs(code, section.rva, rva, 8));
+        }
+    }
+    let before = |at: u32| -> String {
+        prepared
+            .info
+            .rva_to_file_offset(at)
+            .and_then(|o| prepared.bytes.get((o as usize).checked_sub(8)?..o as usize))
+            .map_or_else(String::new, hex_str)
+    };
+    let shown: Vec<String> = refs
+        .iter()
+        .take(32)
+        .map(|r| format!("+{:#x} {} (+{})", r.at, before(r.at), r.offset))
+        .collect();
+    println!(
+        "ui legacy size {} reads of +{rva:#x} in code: {}",
+        refs.len(),
+        shown.join(", ")
+    );
+    let held = prepared
+        .info
+        .rva_to_file_offset(rva)
+        .and_then(|o| prepared.bytes.get(o as usize..o as usize + 8));
+    match held {
+        Some(bytes) if bytes == patch.expect.as_slice() => {
+            println!(
+                "ui legacy size +{rva:#x} 3840x2160 -> {}x{} (VICTORY_UI_LEGACY_SIZE)",
+                size.width, size.height
+            );
+            Some(patch)
+        }
+        Some(bytes) => {
+            println!(
+                "ui legacy size +{rva:#x} left alone: it holds {}, not the stock 3840x2160 \
+                 (set at run time?)",
+                hex_str(bytes)
+            );
+            None
+        }
+        None => {
+            println!("ui legacy size +{rva:#x} left alone: not in the file (set at run time)");
+            None
+        }
+    }
 }
 
 /// With the output patched to `size`: the UI blocks of the title's settings

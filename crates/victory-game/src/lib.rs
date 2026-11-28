@@ -132,6 +132,7 @@ mod tests {
                 let size = output::OutputSize::parse("1440p").unwrap();
                 let mut runs: Vec<(u32, usize)> = output::output_patches(sites, size, 1.0, 0)
                     .iter()
+                    .chain([output::legacy_ui_size_patch(sites, size)].iter())
                     .map(|p| (p.rva, p.write.len()))
                     .chain(build.patches.iter().map(|p| (p.rva, p.write.len())))
                     .collect();
@@ -142,6 +143,14 @@ mod tests {
             }
         }
         assert!(identify("00").is_none());
+    }
+
+    /// The legacy UI size of the known build lies where its settings load
+    /// reads it.
+    #[test]
+    fn the_legacy_ui_size_of_the_known_build() {
+        let sites = KNOWN_BUILDS[0].output.as_ref().unwrap();
+        assert_eq!(output::legacy_ui_size_rva(sites), 0xa94_38ec);
     }
 
     /// With the FidelityFX path for DLSS, the upscaler choices are left
