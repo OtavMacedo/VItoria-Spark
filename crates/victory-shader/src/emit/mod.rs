@@ -93,6 +93,8 @@ mod image_lod_tests;
 #[cfg(all(test, windows))]
 mod intersect_tests;
 mod lds_exact;
+#[cfg(test)]
+mod lds_exact_tests;
 mod lower;
 mod own_bits;
 mod rect;
@@ -406,6 +408,12 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
     let io = io::raise(&p, &native)?;
     let st = st?;
     emit(&c, &native, &p, &st, &io, &res)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The group-shared memory (dwords) of the program `emit_program` made last on this thread.
+    static TEST_LAST_LDS_DWORDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 thread_local! {
@@ -862,6 +870,8 @@ fn emit_program(
         mesh_stride,
     })?;
     let wave_size = l.wave_size;
+    #[cfg(test)]
+    TEST_LAST_LDS_DWORDS.set(l.lds_dwords);
     let shader = HostShader {
         stage: native.stage,
         dxil: l.dxil,

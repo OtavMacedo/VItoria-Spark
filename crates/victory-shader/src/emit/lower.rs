@@ -70,6 +70,9 @@ pub(crate) struct Lowered {
     /// Functions declared in the emitted DXIL module.
     #[cfg(test)]
     pub funcs: Vec<String>,
+    /// The group-shared memory declared, in dwords.
+    #[cfg(test)]
+    pub lds_dwords: u32,
 }
 
 pub(crate) struct Parts<'a> {
@@ -2505,6 +2508,8 @@ impl<'a> Lower<'a> {
             wave_ops: self.s.flags & flags::WAVE_OPS != 0,
             #[cfg(test)]
             funcs: self.s.m.func_names(),
+            #[cfg(test)]
+            lds_dwords: self.s.lds_dwords,
             dxil: self.s.finish(),
             user_data,
             samplers: self.samplers,
