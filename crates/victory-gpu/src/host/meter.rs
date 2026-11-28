@@ -148,6 +148,7 @@ impl Meter {
         }
         crate::shadow::back_line(frames);
         crate::shadow::wide_line(frames);
+        crate::shadow::looks_line(frames);
         {
             let [passes, pieces, compares] =
                 [0, 1, 2].map(|i| CARD_PASSES[i].swap(0, Ordering::Relaxed) as f64 / frames);

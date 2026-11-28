@@ -24,6 +24,9 @@ use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 use crate::host::{HostList, host};
 use crate::watch::PAGE;
 
+mod looks;
+pub(crate) use looks::line as looks_line;
+
 /// A title buffer's host copy.
 pub(crate) struct Shadow {
     pub(crate) buffer: ID3D12Resource,
@@ -33,13 +36,15 @@ pub(crate) struct Shadow {
     start: u64,
     len: u64,
     /// Per page of title memory from `start`'s on: the write-watch asking
-    /// after which it was last copied (0: never).
-    copied: Mutex<Vec<u64>>,
+    /// after which it was last copied (0: never). Read sharing its lock
+    /// with `VICTORY_NOTHING_NEW_FAST` ([`looks`]).
+    copied: looks::Copied,
     /// Whether the memory is write-watched: unknown, yes, no.
     watched: AtomicU8,
     /// Ranges shaders of a submission not yet copied back may be writing:
-    /// title memory there is older than the copy.
-    pending: Mutex<Vec<(usize, usize)>>,
+    /// title memory there is older than the copy. With a flag read
+    /// without the lock under `VICTORY_NOTHING_NEW_FAST` ([`looks`]).
+    pending: looks::Pending,
     /// With [`relay`]: how many submissions not yet copied back declared
     /// each range of `pending` ([`Flights`]). Locked inside `pending`'s
     /// lock.
@@ -4346,7 +4351,7 @@ pub(crate) fn window_use() -> [u64; 8] {
     let mut out = [0u64; 8];
     let loose = LOOSE.lock().unwrap_or_else(|e| e.into_inner());
     for s in loose.values() {
-        let copied = s.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let copied = s.copied.read();
         let pages = copied.iter().filter(|&&at| at != 0).count() as u64;
         out[0] += (pages * PAGE as u64).min(s.len);
         if crate::host::references(&s.buffer) > 1 {
@@ -4550,9 +4555,9 @@ impl Shadow {
             gpu,
             start,
             len,
-            copied: Mutex::new(vec![0; pages as usize]),
+            copied: looks::Copied::new(pages as usize),
             watched: AtomicU8::new(0),
-            pending: Mutex::default(),
+            pending: looks::Pending::default(),
             flights: Mutex::default(),
             before: Mutex::default(),
             kept: Mutex::default(),
@@ -4682,7 +4687,7 @@ impl Shadow {
         }
         let _timer = WritingTimer(std::time::Instant::now());
         let range = (address, address + len);
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self.pending.lock();
         // With the copy-back on its own thread: counted for this submission
         // (once), whether or not an earlier one still holds the range.
         if relay() {
@@ -5062,7 +5067,7 @@ impl Shadow {
         let base = self.start as usize / PAGE;
         for page in at / PAGE..(at + bytes.len()).div_ceil(PAGE) {
             let (before, now) = crate::watch::wrote_own(page, &[]);
-            let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+            let mut copied = self.copied.write();
             if let Some(taken) = page.checked_sub(base).and_then(|i| copied.get_mut(i))
                 && *taken != 0
                 && *taken >= before
@@ -5130,7 +5135,7 @@ impl Shadow {
         crate::descriptor::host::remapped(at, bytes.len());
         let base = self.start as usize / PAGE;
         {
-            let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+            let mut copied = self.copied.write();
             if let Some(taken) = page.checked_sub(base).and_then(|i| copied.get_mut(i))
                 && *taken != 0
                 && *taken >= before
@@ -5241,7 +5246,7 @@ impl Shadow {
         if self.place.is_some() {
             return;
         }
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self.pending.lock();
         if relay() {
             let free = self
                 .flights
@@ -5309,11 +5314,7 @@ impl Shadow {
     /// Whether shaders of a submission not yet copied back may be writing
     /// the copy.
     pub(crate) fn writes_pending(&self) -> bool {
-        !self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
+        self.pending.any()
     }
 
     /// Whether [`Shadow::update`] of `[address, address + len)` would leave
@@ -5333,14 +5334,7 @@ impl Shadow {
         if from >= to {
             return false;
         }
-        let busy: Vec<(usize, usize)> = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|&&(a, e)| a < to && e > from)
-            .map(|&(a, e)| (a.max(from), e.min(to)))
-            .collect();
+        let busy = self.pending.meeting(from, to);
         if busy.is_empty() {
             return false;
         }
@@ -5348,7 +5342,7 @@ impl Shadow {
             return true;
         }
         let base = start / PAGE;
-        let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let copied = self.copied.read();
         busy.into_iter()
             .any(|(a, e)| match crate::watch::asked(a, e) {
                 Some((_, written)) => !stale_pages_in(base, &copied, a, e, &written).is_empty(),
@@ -5385,14 +5379,7 @@ impl Shadow {
         if from >= to {
             return false;
         }
-        let busy: Vec<(usize, usize)> = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|&&(a, e)| a < to && e > from)
-            .map(|&(a, e)| (a.max(from), e.min(to)))
-            .collect();
+        let busy = self.pending.meeting(from, to);
         if busy.is_empty() {
             return false;
         }
@@ -5414,7 +5401,7 @@ impl Shadow {
                 return true;
             };
             let stale: Vec<usize> = {
-                let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+                let copied = self.copied.read();
                 stale_pages_in(base, &copied, a, e, &written)
             };
             // A range of two pages or fewer stays on this thread.
@@ -5483,7 +5470,7 @@ impl Shadow {
                 // copy; else the rest of it is the refresh's, which notes
                 // only whole pages, and the page is looked at again.
                 if (page * PAGE).max(start) >= a && ((page + 1) * PAGE).min(end) <= e {
-                    let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut copied = self.copied.write();
                     if let Some(at) = copied.get_mut(page - base) {
                         *at = now;
                     }
@@ -5559,7 +5546,7 @@ impl Shadow {
             }
         }
         drop(before);
-        let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let mut copied = self.copied.write();
         for page in taken {
             if let Some(at) = copied.get_mut(page - base) {
                 *at = now;
@@ -5698,14 +5685,7 @@ impl Shadow {
         if from >= to {
             return 0;
         }
-        let mut busy: Vec<(usize, usize)> = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .copied()
-            .filter(|&(a, e)| a < to && e > from)
-            .collect();
+        let mut busy = self.pending.meeting_whole(from, to);
         if !busy.is_empty() {
             // Around ranges shaders are writing: the gaps, each as below
             // (in the world most submissions have such ranges; copying the
@@ -5800,7 +5780,7 @@ impl Shadow {
         if self.watched.load(Ordering::Relaxed) != 1 {
             return false;
         }
-        let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let copied = self.copied.read();
         crate::watch::unchanged_known(from, to, self.start as usize / PAGE, &copied)
     }
 
@@ -5813,7 +5793,7 @@ impl Shadow {
         if self.watched.load(Ordering::Relaxed) != 1 {
             return false;
         }
-        let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let copied = self.copied.read();
         crate::watch::nothing_new(from, to, self.start as usize / PAGE, &copied)
     }
 
@@ -5882,7 +5862,7 @@ impl Shadow {
     /// asking), whole pages within the buffer.
     fn copy_stale(&self, from: usize, to: usize, now: u64, written: &[(usize, u64)]) -> usize {
         let base = self.start as usize / PAGE;
-        let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let mut copied = self.copied.write();
         let mut writes = written.iter().peekable();
         let (mut bytes, mut run) = (0, None);
         let last = (to - 1) / PAGE;
