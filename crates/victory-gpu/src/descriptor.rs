@@ -11,6 +11,8 @@ use crate::object::{self, DESCRIPTOR_HEAP, E_INVALIDARG, HRESULT, Iid, Object, T
 use crate::resource::{Memory, PAGEABLE_IIDS};
 
 #[cfg(windows)]
+mod bytes;
+#[cfg(windows)]
 pub(crate) mod host;
 
 const HEAP_IIDS: [Iid; 4] = [
@@ -637,12 +639,26 @@ impl RtvRecord {
         self.host_desc(TEXTURE_2D)
     }
 
+    /// The words of [`RtvRecord::desc`] (`depth`: of
+    /// [`RtvRecord::depth_desc`]): all a host view of the same host texture
+    /// is made from (`crate::bind_cache`).
+    #[cfg(windows)]
+    pub(crate) fn host_words(&self, depth: bool) -> Option<[u32; 6]> {
+        const TEXTURE_2D: [u32; 2] = [4, 3];
+        self.words(TEXTURE_2D[usize::from(depth)])
+    }
+
     /// The description words as a host type, the format as the host has it.
     /// Without one, a typeless host copy gets a 2D view (`dimension`) in
     /// the title's format, which the host needs spelled out.
     #[cfg(windows)]
     fn host_desc<T>(&self, dimension: u32) -> Option<T> {
-        assert!(size_of::<T>() <= size_of::<[u32; 6]>());
+        self.words(dimension).map(target_desc)
+    }
+
+    /// [`RtvRecord::host_desc`]'s words.
+    #[cfg(windows)]
+    fn words(&self, dimension: u32) -> Option<[u32; 6]> {
         let mut words = if self.described != 0 {
             self.desc
         } else {
@@ -657,9 +673,17 @@ impl RtvRecord {
         };
         // A target or depth view: of a target, in its stand-in format.
         words[0] = crate::resource::target_format(crate::resource::pc_format(words[0]));
-        // SAFETY: both host view descriptions are 24 bytes in this layout.
-        Some(unsafe { (&raw const words).cast::<T>().read_unaligned() })
+        Some(words)
     }
+}
+
+/// A host render target or depth view description of
+/// [`RtvRecord::host_words`].
+#[cfg(windows)]
+pub(crate) fn target_desc<T>(words: [u32; 6]) -> T {
+    assert!(size_of::<T>() <= size_of::<[u32; 6]>());
+    // SAFETY: both host view descriptions are 24 bytes in this layout.
+    unsafe { (&raw const words).cast::<T>().read_unaligned() }
 }
 
 /// Device method: records the view at `handle` (descriptor memory).

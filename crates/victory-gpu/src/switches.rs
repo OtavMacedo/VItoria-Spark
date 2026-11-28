@@ -82,6 +82,14 @@ pub(crate) static READ_BACK_POOL: Toggle = Toggle::flag("VICTORY_READ_BACK_POOL"
 /// flights' writes decides on its own; the bytes put in are the same.
 pub(crate) static UNDER_WIDE: Toggle = Toggle::flag("VICTORY_UNDER_WIDE");
 
+/// `VICTORY_BIND_CACHE` (`crate::bind_cache`; what it remembers goes at
+/// the first call with it off).
+pub(crate) static BIND_CACHE: Toggle = Toggle::flag("VICTORY_BIND_CACHE");
+
+/// `VICTORY_DESC_MEMCPY` (`crate::descriptor::bytes`; what it kept goes
+/// at the first view made with it off).
+pub(crate) static DESC_MEMCPY: Toggle = Toggle::flag("VICTORY_DESC_MEMCPY");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -105,9 +113,14 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 20] = [
+pub static TABLE: [Entry; 22] = [
     Entry {
         toggle: &ASYNC_PRESENT,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &BIND_CACHE,
         part: "preparo",
         inert: &[],
     },
@@ -123,6 +136,11 @@ pub static TABLE: [Entry; 20] = [
     },
     Entry {
         toggle: &MAPPED_BATCH,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &DESC_MEMCPY,
         part: "preparo",
         inert: &[],
     },

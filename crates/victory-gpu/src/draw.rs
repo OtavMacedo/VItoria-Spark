@@ -599,6 +599,9 @@ pub(crate) struct State {
     /// list: a draw's pipeline is one for them
     /// (`crate::pipeline::host_pipeline_for`).
     target_formats: crate::pipeline::host::TargetFormats,
+    /// With `VICTORY_BIND_CACHE`: the render target and depth views the
+    /// host list was last given ([`crate::bind_cache`]).
+    host_targets: crate::bind_cache::Targets<std::sync::Arc<crate::resource::HostTexture>>,
     viewports: Vec<D3D12_VIEWPORT>,
     scissors: Vec<RECT>,
     blend: Option<[f32; 4]>,
@@ -1463,7 +1466,8 @@ impl State {
         self.index = view.copied().unwrap_or_default();
     }
 
-    /// Render targets and depth, set on the host list at once.
+    /// Render targets and depth, set on the host list at once, unless it
+    /// has the same views already (`VICTORY_BIND_CACHE`, [`crate::bind_cache`]).
     pub(crate) fn set_targets(&mut self, list: &HostList, handles: &[u64], depth: u64) {
         let Some(host) = crate::host::host() else {
             return;
@@ -1473,9 +1477,27 @@ impl State {
         self.depth_handle = depth;
         self.targets_set = true;
         self.targets.clear();
+        let cache = crate::bind_cache::on();
+        // With the cache: what each view is made from, and the host copies
+        // they view (held while the cache remembers them).
+        let mut keys = Vec::new();
+        let mut held = Vec::new();
+        // A title texture's host texture; with the cache, its host copy
+        // held.
+        let mut texture_of = |resource: This| -> Option<&'static ID3D12Resource> {
+            if !cache {
+                return crate::resource::host_resource(resource);
+            }
+            let copy = crate::resource::host_copy(resource)?;
+            // SAFETY: the copy is held in `held` and then by the cache until
+            // the views are set; on a hit (nothing set) it is not used.
+            let texture = unsafe { &*std::ptr::from_ref(&copy.texture) };
+            held.push(copy);
+            Some(texture)
+        };
         // The formats of the host views, for the draws' pipelines.
         let mut formats = [0; 9];
-        let mut rtvs = Vec::new();
+        let mut views = Vec::new();
         for &h in handles {
             let Some(record) = crate::descriptor::rtv_record(h) else {
                 once!(
@@ -1484,39 +1506,55 @@ impl State {
                 );
                 continue;
             };
-            let Some(texture) = crate::resource::host_resource(record.resource) else {
+            let words = record.host_words(false);
+            let Some(texture) = texture_of(record.resource) else {
                 // A typed null view (or a target without a host copy) still
                 // takes its slot: left out, the next live target would move
                 // into it and the pixel shader's outputs reach the wrong
                 // targets.
                 // shortcut: a view without a description or a format has no
                 // null view to stand for it and is left out, as before.
-                let null = record
-                    .desc()
+                let null = words
+                    .map(crate::descriptor::target_desc::<D3D12_RENDER_TARGET_VIEW_DESC>)
                     .filter(|d| d.Format.0 != 0 && d.ViewDimension.0 != 0);
                 if let Some(desc) = null {
-                    if rtvs.len() < 8 {
-                        formats[rtvs.len()] = desc.Format.0 as u32;
+                    if views.len() < 8 {
+                        formats[views.len()] = desc.Format.0 as u32;
                     }
-                    rtvs.push(host.rtv(None, Some(&desc)));
+                    views.push((None, Some(desc)));
+                    if cache {
+                        keys.push(crate::bind_cache::ViewKey {
+                            host: 0,
+                            title: record.resource as usize,
+                            desc: words,
+                        });
+                    }
                 }
                 continue;
             };
             self.targets.push(record.resource as usize);
             #[cfg(feature = "diagnostics")]
             crate::capture::note_target(record.resource);
-            let desc = record.desc();
-            if rtvs.len() < 8 {
-                formats[rtvs.len()] = bound_format(texture, desc.as_ref().map(|d| d.Format));
+            let desc = words.map(crate::descriptor::target_desc::<D3D12_RENDER_TARGET_VIEW_DESC>);
+            if views.len() < 8 {
+                formats[views.len()] = bound_format(texture, desc.as_ref().map(|d| d.Format));
             }
-            rtvs.push(host.rtv(Some(texture), desc.as_ref()));
+            views.push((Some(texture), desc));
+            if cache {
+                keys.push(crate::bind_cache::ViewKey {
+                    host: texture.as_raw() as usize,
+                    title: record.resource as usize,
+                    desc: words,
+                });
+            }
         }
         self.depth = 0;
         self.depth_state = DEPTH_WRITE;
         let dsv = crate::descriptor::dsv_record(depth).and_then(|record| {
-            let texture = crate::resource::host_resource(record.resource)?;
+            let texture = texture_of(record.resource)?;
             self.depth = record.resource as usize;
-            let desc = record.depth_desc();
+            let words = record.host_words(true);
+            let desc = words.map(crate::descriptor::target_desc::<D3D12_DEPTH_STENCIL_VIEW_DESC>);
             self.depth_state = depth_state(texture, desc.as_ref());
             formats[8] = bound_format(texture, desc.as_ref().map(|d| d.Format));
             if crate::resource::depth_and_unordered(record.resource) {
@@ -1524,9 +1562,27 @@ impl State {
             }
             #[cfg(feature = "diagnostics")]
             crate::capture::note_target(record.resource);
-            Some(host.dsv(texture, desc.as_ref()))
+            let key = crate::bind_cache::ViewKey {
+                host: texture.as_raw() as usize,
+                title: record.resource as usize,
+                desc: words,
+            };
+            Some((texture, desc, key))
         });
         self.target_formats = formats;
+        let depth_key = dsv.as_ref().map(|&(_, _, key)| key);
+        #[cfg(feature = "diagnostics")]
+        if cache {
+            crate::bind_cache::line();
+        }
+        if self.host_targets.same(cache, &keys, depth_key, held) {
+            return;
+        }
+        let rtvs: Vec<_> = views
+            .iter()
+            .map(|(texture, desc)| host.rtv(*texture, desc.as_ref()))
+            .collect();
+        let dsv = dsv.map(|(texture, desc, _)| host.dsv(texture, desc.as_ref()));
         // SAFETY: an open list; the views were just made.
         unsafe {
             list.list.OMSetRenderTargets(
@@ -1594,6 +1650,7 @@ impl State {
     /// the targets (a descriptor rewritten in between names another view).
     pub(crate) fn replay(&mut self, list: &HostList) {
         self.host_pipeline = 0;
+        self.host_targets.forget();
         self.host_roots = [0; 2];
         self.host_heaps = [0; 2];
         if self.topology_set {
@@ -1897,10 +1954,22 @@ impl State {
             // SAFETY: an open list and a live pipeline.
             unsafe { l.SetPipelineState(&p.pso) };
             self.host_pipeline = p.pso.as_raw() as usize;
-            list.used_pipeline(&p.name);
+            let (reuse, cache) = (crate::host::list_reuse(), crate::bind_cache::on());
+            // Whether this is the list's first bind of the pipeline, if a
+            // switch asks (once: the list remembers it).
+            let first = (reuse || cache).then(|| list.first_bind(p.pso.as_raw() as usize));
+            // With `VICTORY_BIND_CACHE`, a pipeline bound before is named
+            // already: the list keeps it from its first bind, so no other
+            // is made at its address meanwhile.
+            if !cache || first == Some(true) || crate::cardmeter::pipelines() {
+                list.used_pipeline(&p.name);
+            } else {
+                #[cfg(feature = "diagnostics")]
+                crate::bind_cache::name_skipped();
+            }
             // The title may release the pipeline before it submits the list.
             // (`VICTORY_LIST_REUSE`: kept at the list's first bind of it only.)
-            if !crate::host::list_reuse() || list.first_bind(p.pso.as_raw() as usize) {
+            if !reuse || first == Some(true) {
                 list.keep(&p.pso);
                 list.keep(&p.root);
             }
