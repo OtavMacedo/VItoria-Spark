@@ -220,6 +220,66 @@ pub fn output_patches(
     ]
 }
 
+/// Where the settings-screen load of [`OutputSites::ui_size_load`] reads
+/// its legacy UI size in the stock image: a 3840x2160 pair of the title's
+/// own (two u32), in its data. That load is pointed elsewhere by
+/// [`output_patches`]; any other code that reads the pair still gets 4K.
+pub fn legacy_ui_size_rva(sites: &OutputSites) -> u32 {
+    let [_, _, _, _, d0, d1, d2, d3] = sites.ui_size_load_stock;
+    sites
+        .ui_size_load
+        .wrapping_add(8)
+        .wrapping_add_signed(i32::from_le_bytes([d0, d1, d2, d3]))
+}
+
+/// `VICTORY_UI_LEGACY_SIZE=1`, with a patched output: the legacy UI size
+/// itself ([`legacy_ui_size_rva`]) becomes the output's size, so that every
+/// reader of the pair, not only the settings screen, lays out for the
+/// output. Applies only where the image holds the stock 3840x2160 there
+/// (the pair may be zero in the file and set at run time).
+pub fn legacy_ui_size_patch(sites: &OutputSites, size: OutputSize) -> TitlePatch {
+    let pair = |s: OutputSize| [s.width.to_le_bytes(), s.height.to_le_bytes()].concat();
+    TitlePatch {
+        name: "output: legacy UI size",
+        rva: legacy_ui_size_rva(sites),
+        expect: pair(LEGACY_CANVAS),
+        write: pair(size),
+    }
+}
+
+/// A code operand that reaches `[start, start + len)` RIP-relatively: the
+/// RVA of its 32-bit displacement, and the byte of the range it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RipRef {
+    pub at: u32,
+    pub offset: u32,
+}
+
+/// Every 32-bit displacement in `code` (mapped at `code_rva`) that, read as
+/// a RIP-relative operand ending the instruction or followed by an 8- or
+/// 32-bit immediate, reaches `[start, start + len)` (a 4-byte aligned byte
+/// of it before any other). A scan of bytes, not a
+/// disassembly: a hit may now and then be data that happens to match, and
+/// the caller shows the bytes before each so it can be told.
+pub fn rip_relative_refs(code: &[u8], code_rva: u32, start: u32, len: u32) -> Vec<RipRef> {
+    let mut found = Vec::new();
+    for (i, window) in code.windows(4).enumerate() {
+        let displacement = i32::from_le_bytes([window[0], window[1], window[2], window[3]]);
+        let at = code_rva.wrapping_add(i as u32);
+        let offsets = [0u32, 1, 4].map(|immediate| {
+            at.wrapping_add(4 + immediate)
+                .wrapping_add_signed(displacement)
+                .wrapping_sub(start)
+        });
+        // The pair is two u32: an aligned reading is taken over another.
+        let reached = offsets.iter().filter(|&&o| o < len);
+        if let Some(&offset) = reached.clone().find(|&&o| o % 4 == 0).or(reached.min()) {
+            found.push(RipRef { at, offset });
+        }
+    }
+    found
+}
+
 /// The blocks of the title's settings file that size its UI. Left at 0x0
 /// ("as the console") the UI is laid out for 3840x2160 whatever the output,
 /// so on a smaller output every element comes out larger by the ratio of
@@ -442,6 +502,53 @@ mod tests {
         assert_eq!(ui.text, text);
         let unclosed = "<uiResolution><width value=\"0";
         assert_eq!(ui_settings_for(unclosed, LEGACY_CANVAS).text, unclosed);
+    }
+
+    /// The pair the settings load reads, and the patch that resizes it.
+    #[test]
+    fn the_legacy_ui_size_follows_the_output() {
+        // The stock displacement 0x0403_0201, from the end of the load.
+        assert_eq!(legacy_ui_size_rva(&SITES), 0x4008 + 0x0403_0201);
+        let negative = OutputSites {
+            ui_size_load_stock: [0xc5, 0xfb, 0x10, 0x0d, 0xf8, 0xff, 0xff, 0xff],
+            ..SITES
+        };
+        assert_eq!(legacy_ui_size_rva(&negative), 0x4000);
+        let patch = legacy_ui_size_patch(&SITES, OutputSize::parse("1440p").unwrap());
+        assert_eq!(patch.rva, legacy_ui_size_rva(&SITES));
+        assert_eq!(patch.expect, [0, 0x0f, 0, 0, 0x70, 8, 0, 0]);
+        assert_eq!(patch.write, [0, 0x0a, 0, 0, 0xa0, 5, 0, 0]);
+    }
+
+    /// Loads of the pair are found by their displacement, with or without
+    /// an immediate after it, and nothing else is.
+    #[test]
+    fn finds_rip_relative_reads() {
+        // At 0x1000: vmovsd xmm1, [rip+d] (8 bytes) reading the pair at
+        // 0x2000; cmp dword [rip+d], 1 (7 bytes) reading its height; a
+        // read of 0x3000, outside it.
+        let mut code = vec![0xc5, 0xfb, 0x10, 0x0d];
+        code.extend((0x2000i32 - 0x1008).to_le_bytes());
+        code.extend([0x83, 0x3d]);
+        code.extend((0x2004i32 - (0x1008 + 7)).to_le_bytes());
+        code.push(1);
+        code.extend([0x8b, 0x05]);
+        code.extend((0x3000i32 - 0x1015).to_le_bytes());
+        let refs = rip_relative_refs(&code, 0x1000, 0x2000, 8);
+        assert_eq!(
+            refs,
+            [
+                RipRef {
+                    at: 0x1004,
+                    offset: 0
+                },
+                RipRef {
+                    at: 0x100a,
+                    offset: 4
+                },
+            ]
+        );
+        assert!(rip_relative_refs(&code[..3], 0x1000, 0x2000, 8).is_empty());
     }
 
     /// A load that lies after the display mode gets a negative displacement.
