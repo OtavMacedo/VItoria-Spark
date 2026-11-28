@@ -992,6 +992,21 @@ fn log_memory() {
         mb(crate::shadow::window_cover()),
         lists[3],
     );
+    // What `crate::memtrim` gave back, when any of it is on.
+    if crate::memtrim::any() {
+        let given = crate::memtrim::counts();
+        tracing::info!(
+            "memory, given back since the start: {} host list allocators and {} prelude \
+             allocators taken anew; {} idle host lists destroyed; {:.0} MB of spare scratch \
+             chunks freed; {} indirect budgets handed out as slots of {} shared buffers",
+            given[0],
+            given[1],
+            given[2],
+            mb(given[3]),
+            given[4],
+            given[5],
+        );
+    }
 }
 
 /// Microseconds since the first call.
