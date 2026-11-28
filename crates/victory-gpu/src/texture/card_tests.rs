@@ -1,5 +1,5 @@
-//! The fallback of the card's detile to the CPU's way, and the parts of
-//! staging layouts, on the software adapter (skipped without it).
+//! The card's detile against the CPU's for whole staging layouts, and its
+//! fallback to the CPU's way, on a D3D12 device (skipped without one).
 
 use super::*;
 use crate::detile::tests::warp::Warp;
@@ -156,6 +156,80 @@ fn pattern(len: u64) -> Vec<u8> {
         .collect()
 }
 
+/// The shader, given the tables and dispatches an upload of a whole
+/// staging layout makes (every level of every slice, at the device's own
+/// footprints), writes what the CPU's way leaves in the staging buffer,
+/// byte for byte over every row of the texture; levels not held are zeros
+/// on both ways. BC7 and plain texels, thin arrays (one table moved per
+/// slice), thick 3D, linear, and every block size.
+#[test]
+fn warp_a_whole_texture_detiled_on_the_card_is_what_the_cpu_stages() {
+    let Some(w) = Warp::new() else {
+        eprintln!("no D3D12 device: skipped");
+        return;
+    };
+    let device = w.device().clone();
+    let code = crate::host::compile(
+        crate::detile::DETILE,
+        windows::core::s!("main"),
+        windows::core::s!("cs_5_1"),
+    )
+    .expect("the detile shader compiles");
+    let three = Layout::new(&Desc {
+        dimension: Dimension::Tex3d,
+        ..layout(64, 32, 6, 16, false, 4, Swizzle::SW_4KB_S).desc
+    })
+    .unwrap();
+    let mut subresources = 0;
+    for l in [
+        layout(256, 256, 9, 1, true, 16, Swizzle::SW_64KB_S),
+        layout(512, 512, 10, 3, true, 16, Swizzle::SW_64KB_D),
+        layout(300, 200, 9, 2, false, 4, Swizzle::SW_4KB_D),
+        layout(128, 128, 8, 2, false, 8, Swizzle::SW_256B_S),
+        layout(200, 100, 1, 1, false, 4, Swizzle::LINEAR),
+        three,
+    ] {
+        let title = pattern(l.size);
+        let cpu = staging(&device, &title, &l, true);
+        cpu.refresh();
+        let on_cpu = held(&cpu);
+        let card = staging(&device, &title, &l, false);
+        assert!(card.buffer().is_none());
+        let subs = card.subs();
+        assert_eq!(subs.len(), cpu.footprints.len());
+        let (words, jobs) = crate::detile::plan(&l, &subs, l.size, card.bytes, u32::MAX)
+            .unwrap_or_else(|why| panic!("{:?}: {why:?}", l.desc));
+        let got = w.run_jobs(&code, &title, &words, &jobs, card.bytes as usize);
+        let expected = card.expected(&title, u32::MAX).expect("the CPU detiles it");
+        for &(at, len) in &expected.ranges {
+            let range = at as usize..(at + len) as usize;
+            assert!(
+                got[range.clone()] == on_cpu[range.clone()],
+                "{:?}: bytes {range:?} differ from the staging buffer",
+                l.desc
+            );
+            assert!(got[range.clone()] == expected.bytes[range.clone()]);
+        }
+        subresources += subs.len();
+        // Levels not held (a texture whose levels are given memory on
+        // demand): zeros over the whole part, the others as before.
+        let held_levels = !0b10u32;
+        let (words, jobs) =
+            crate::detile::plan(&l, &subs, l.size, card.bytes, held_levels).unwrap();
+        let got = w.run_jobs(&code, &title, &words, &jobs, card.bytes as usize);
+        let expected = card.expected(&title, held_levels).unwrap();
+        for &(at, len) in &expected.ranges {
+            let range = at as usize..(at + len) as usize;
+            assert!(
+                got[range.clone()] == expected.bytes[range.clone()],
+                "{:?}: bytes {range:?} with level 1 not held",
+                l.desc
+            );
+        }
+    }
+    eprintln!("gpu detile: {subresources} subresources byte-exact against the CPU's staging");
+}
+
 /// A texture whose staging buffer was let go (as `unstage` and the idle
 /// sweep let it go) comes back detiled on the card and finds the rings
 /// full: the upload goes the CPU's way at once, with a staging buffer made
@@ -167,7 +241,7 @@ fn warp_a_full_ring_after_the_staging_buffer_went_detiles_on_the_cpu() {
     use crate::detile::{Arena, GRAIN, Why, take_slices};
     use std::sync::atomic::Ordering::Relaxed;
     let Some(w) = Warp::new() else {
-        eprintln!("no software adapter: skipped");
+        eprintln!("no D3D12 device: skipped");
         return;
     };
     let device = w.device().clone();
@@ -250,7 +324,7 @@ fn warp_a_full_ring_after_the_staging_buffer_went_detiles_on_the_cpu() {
 #[test]
 fn warp_a_texture_with_a_staging_buffer_never_asks_the_card() {
     let Some(w) = Warp::new() else {
-        eprintln!("no software adapter: skipped");
+        eprintln!("no D3D12 device: skipped");
         return;
     };
     let device = w.device().clone();
@@ -274,7 +348,7 @@ fn warp_a_texture_with_a_staging_buffer_never_asks_the_card() {
 fn warp_every_part_of_a_staging_layout_fits_its_slices() {
     use crate::detile::{check_part, pack, table_slice};
     let Some(w) = Warp::new() else {
-        eprintln!("no software adapter: skipped");
+        eprintln!("no D3D12 device: skipped");
         return;
     };
     let device = w.device().clone();

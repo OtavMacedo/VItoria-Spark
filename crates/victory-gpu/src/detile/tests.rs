@@ -237,11 +237,11 @@ fn the_first_difference_is_found_inside_the_ranges_only() {
 
 /// The shader itself on a D3D12 device, against the CPU's detile:
 /// BC-sized tiled elements, an array slice by shift, a split dispatch and
-/// zeros. Skipped without the software adapter.
+/// zeros. Skipped without a device.
 #[test]
 fn warp_the_shader_detiles_as_the_cpu_does() {
     let Some(w) = warp::Warp::new() else {
-        eprintln!("no software adapter: skipped");
+        eprintln!("no D3D12 device: skipped");
         return;
     };
     let code = crate::host::compile(
@@ -300,16 +300,70 @@ fn warp_the_shader_detiles_as_the_cpu_does() {
     eprintln!("detile shader: {checked} subresources byte-exact against the CPU");
 }
 
+/// Zeros, a table at a word offset and a split dispatch, as [`jobs_for`]
+/// makes them, run on the CPU: the parts land where the CPU's detile puts
+/// them, and a level not held is zeros.
+#[test]
+fn planned_jobs_place_every_part() {
+    let l = Layout::new(&desc(128, 64, 3, 8, 4, 2, Swizzle::SW_4KB_S)).unwrap();
+    let raw = pattern(l.size);
+    // Two slices of three levels, each at its own 256-byte pitch.
+    let mut subs = Vec::new();
+    let mut offset = 0u64;
+    for slice in 0..2 {
+        for mip in 0..3 {
+            let m = l.mips[mip as usize];
+            let row_pitch = (u64::from(m.width) * 8).next_multiple_of(256);
+            subs.push(Sub {
+                mip,
+                slice,
+                offset,
+                row_pitch,
+                rows: m.height,
+                depth: 1,
+            });
+            offset = (offset + row_pitch * u64::from(m.height)).next_multiple_of(512);
+        }
+    }
+    let held = !0b010;
+    let (words, jobs) = plan(&l, &subs, l.size, offset, held).unwrap();
+    let mut card = vec![0xcc; offset as usize];
+    for (c, groups) in &jobs {
+        emulate(&words, *c, *groups, &raw, &mut card);
+    }
+    for sub in &subs {
+        let m = l.mips[sub.mip as usize];
+        let (at, pitch) = (sub.offset as usize, sub.row_pitch as usize);
+        let plane = pitch * m.height as usize;
+        if held & (1 << sub.mip) == 0 {
+            assert!(card[at..at + plane].iter().all(|&b| b == 0), "{sub:?}");
+            continue;
+        }
+        let mut cpu = vec![0u8; plane];
+        l.detile(&raw, sub.mip, sub.slice, &mut cpu, pitch, plane)
+            .unwrap();
+        for y in 0..m.height as usize {
+            let row = y * pitch..y * pitch + m.width as usize * 8;
+            assert_eq!(
+                &card[at + row.start..at + row.end],
+                &cpu[row],
+                "{sub:?} row {y}"
+            );
+        }
+    }
+}
+
 pub(crate) mod warp {
     use super::super::*;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0;
+    use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
     use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
     use windows::Win32::Graphics::Dxgi::*;
     use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
-    /// A device on the software adapter, with a queue to run one list at
-    /// a time.
+    /// A device on the adapter DXGI calls WARP (the software one on
+    /// Windows), or on the default adapter where there is none (Wine with
+    /// a translated DXGI), with a queue to run one list at a time.
     pub(crate) struct Warp {
         device: ID3D12Device,
         queue: ID3D12CommandQueue,
@@ -324,11 +378,19 @@ pub(crate) mod warp {
         pub(crate) fn new() -> Option<Warp> {
             // SAFETY: plain DXGI queries and object creation.
             unsafe {
-                let factory: IDXGIFactory4 =
-                    CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
-                let adapter: IDXGIAdapter = factory.EnumWarpAdapter().ok()?;
                 let mut device: Option<ID3D12Device> = None;
-                D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).ok()?;
+                let warp = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
+                    .and_then(|factory| factory.EnumWarpAdapter::<IDXGIAdapter>());
+                if let Ok(adapter) = warp {
+                    let _ = D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device);
+                }
+                if device.is_none() {
+                    let _ = D3D12CreateDevice(
+                        None::<&windows::core::IUnknown>,
+                        D3D_FEATURE_LEVEL_11_0,
+                        &mut device,
+                    );
+                }
                 let device = device?;
                 let queue: ID3D12CommandQueue = device
                     .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
@@ -503,6 +565,74 @@ pub(crate) mod warp {
                 let mut data = std::ptr::null_mut();
                 back.Map(0, None, Some(&mut data)).unwrap();
                 let got = std::slice::from_raw_parts(data.cast::<u8>(), out_len as usize).to_vec();
+                back.Unmap(0, None);
+                got
+            }
+        }
+
+        /// Runs `jobs` (root constants, groups) as `pre_list` records them,
+        /// the tables `words` in one buffer, the raw slice `raw`, into a
+        /// ring of `out_len` bytes filled with `0xcc` first; gives the
+        /// ring's bytes.
+        pub(crate) fn run_jobs(
+            &self,
+            code: &[u8],
+            raw: &[u8],
+            words: &[u32],
+            jobs: &[([u32; 8], (u32, u32))],
+            out_len: usize,
+        ) -> Vec<u8> {
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            let (raw_b, table_b) = (self.upload(raw), self.upload(&bytes));
+            let fill = self.upload(&vec![0xcc; out_len]);
+            let out = self.buffer(
+                D3D12_HEAP_TYPE_DEFAULT,
+                out_len as u64,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            );
+            let back = self.buffer(
+                D3D12_HEAP_TYPE_READBACK,
+                out_len as u64,
+                D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            );
+            let (root, pso) = pipeline(&self.device, code).expect("the detile pipeline");
+            let (dest, uav, source) = (
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+            // SAFETY: our device, list and buffers, alive until the wait
+            // below has seen the list run.
+            unsafe {
+                self.allocator.Reset().unwrap();
+                self.list.Reset(&self.allocator, None).unwrap();
+                let l = &self.list;
+                l.CopyBufferRegion(&out, 0, &fill, 0, out_len as u64);
+                l.ResourceBarrier(&[crate::host::transition(&out, dest, uav)]);
+                l.SetComputeRootSignature(&root);
+                l.SetPipelineState(&pso);
+                l.SetComputeRootShaderResourceView(ROOT_TABLES, table_b.GetGPUVirtualAddress());
+                for (c, groups) in jobs {
+                    l.SetComputeRoot32BitConstants(ROOT_CONSTANTS, 8, c.as_ptr().cast(), 0);
+                    l.SetComputeRootShaderResourceView(ROOT_RAW, raw_b.GetGPUVirtualAddress());
+                    l.SetComputeRootUnorderedAccessView(ROOT_OUT, out.GetGPUVirtualAddress());
+                    l.Dispatch(groups.0, groups.1, 1);
+                }
+                l.ResourceBarrier(&[crate::host::transition(&out, uav, source)]);
+                l.CopyBufferRegion(&back, 0, &out, 0, out_len as u64);
+                l.Close().unwrap();
+                self.queue.ExecuteCommandLists(&[Some(l.cast().unwrap())]);
+                self.sent.set(self.sent.get() + 1);
+                self.queue.Signal(&self.fence, self.sent.get()).unwrap();
+                self.fence
+                    .SetEventOnCompletion(self.sent.get(), self.event)
+                    .unwrap();
+                WaitForSingleObject(self.event, INFINITE);
+                let mut data = std::ptr::null_mut();
+                back.Map(0, None, Some(&mut data)).unwrap();
+                let got = std::slice::from_raw_parts(data.cast::<u8>(), out_len).to_vec();
                 back.Unmap(0, None);
                 got
             }

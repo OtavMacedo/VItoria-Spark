@@ -285,7 +285,6 @@ pub(crate) fn table_slice(layout: &Layout, slice: u32) -> (u32, u64) {
 /// `raw_len` and `out_len` bound the slices, which every word is checked
 /// against. Zeros: `rows_at` words from `out_at` on.
 pub(crate) const DETILE: &str = r#"
-#define RS "RootConstants(num32BitConstants=8, b0), SRV(t0), SRV(t1), UAV(u0)"
 cbuffer Job : register(b0) {
     uint runs_at;
     uint run_count;
@@ -300,7 +299,6 @@ ByteAddressBuffer raw : register(t0);
 ByteAddressBuffer table : register(t1);
 RWByteAddressBuffer outb : register(u0);
 
-[RootSignature(RS)]
 [numthreads(64, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     if (run_count == 0) {
@@ -325,7 +323,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 }
 "#;
 
-/// Root parameters of [`DETILE`]'s root signature (its `RS`), in order.
+/// Root parameters of [`DETILE`]'s root signature ([`root_signature`]).
 const ROOT_CONSTANTS: u32 = 0;
 const ROOT_RAW: u32 = 1;
 const ROOT_TABLES: u32 = 2;
@@ -380,6 +378,44 @@ pub(crate) fn emulate(words: &[u32], c: [u32; 8], groups: (u32, u32), raw: &[u8]
             }
         }
     }
+}
+
+/// The table words and dispatches (root constants, groups) for an upload
+/// of `raw_len` bytes into `out_len` laid out as `subs`, built as
+/// [`reserve`] and [`fill`] build them, without the rings: every table
+/// placed in one buffer at the alignment the table buffer uses.
+#[cfg(test)]
+pub(crate) fn plan(
+    layout: &Layout,
+    subs: &[Sub],
+    raw_len: u64,
+    out_len: u64,
+    held: u32,
+) -> Result<(Vec<u32>, Vec<([u32; 8], (u32, u32))>), Why> {
+    let mut words = Vec::new();
+    let mut parts = Vec::new();
+    for sub in subs {
+        let (slice, shift) = table_slice(layout, sub.slice);
+        let depth_pitch = sub.row_pitch * u64::from(sub.rows);
+        let packed = layout
+            .copy_table(sub.mip, slice, sub.row_pitch as usize, depth_pitch as usize)
+            .map_err(|_| Why::NoTable)
+            .and_then(|t| pack(&t))?;
+        words.resize(words.len().next_multiple_of(4), 0);
+        let table = Table {
+            at: words.len() as u32,
+            runs: packed.runs,
+            rows: packed.rows,
+            tiled_end: packed.tiled_end,
+            linear_end: packed.linear_end,
+        };
+        words.extend(&packed.words);
+        parts.push(part(sub, table, shift, raw_len, out_len)?);
+    }
+    Ok((
+        words,
+        jobs_for(&parts, held, raw_len as u32, out_len as u32),
+    ))
 }
 
 /// A table in the table buffer: where its words start, and its bounds.
@@ -572,26 +608,74 @@ pub(crate) fn ready() -> bool {
     })
 }
 
-/// The detile pipeline from `code` (compiled [`DETILE`]; the root signature
-/// is inside it).
+/// [`DETILE`]'s root signature, in the order of the `ROOT_*` indices: the
+/// job's 8 constants (b0), the raw slice (t0), the tables (t1) and the
+/// output slice (u0), all root views. Serialized here rather than embedded
+/// in the shader: a compiler that drops an embedded root signature (Wine's)
+/// then still gives a working pipeline.
+fn root_signature(device: &ID3D12Device) -> windows::core::Result<ID3D12RootSignature> {
+    let view = |kind, register| D3D12_ROOT_PARAMETER {
+        ParameterType: kind,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Descriptor: D3D12_ROOT_DESCRIPTOR {
+                ShaderRegister: register,
+                RegisterSpace: 0,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    let parameters = [
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 0,
+                    RegisterSpace: 0,
+                    Num32BitValues: 8,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        view(D3D12_ROOT_PARAMETER_TYPE_SRV, 0),
+        view(D3D12_ROOT_PARAMETER_TYPE_SRV, 1),
+        view(D3D12_ROOT_PARAMETER_TYPE_UAV, 0),
+    ];
+    let desc = D3D12_ROOT_SIGNATURE_DESC {
+        NumParameters: parameters.len() as u32,
+        pParameters: parameters.as_ptr(),
+        ..Default::default()
+    };
+    let mut blob: Option<windows::Win32::Graphics::Direct3D::ID3DBlob> = None;
+    // SAFETY: the description and its parameters live through the call;
+    // the blob's bytes are read while it is held.
+    unsafe {
+        D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &mut blob, None)?;
+        let blob = blob.ok_or_else(windows::core::Error::empty)?;
+        let bytes =
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize());
+        device.CreateRootSignature(0, bytes)
+    }
+}
+
+/// The detile pipeline from `code` (compiled [`DETILE`]) and its root
+/// signature.
 pub(crate) fn pipeline(
     device: &ID3D12Device,
     code: &[u8],
 ) -> windows::core::Result<(ID3D12RootSignature, ID3D12PipelineState)> {
-    // SAFETY: the blob's bytes, which outlive the calls.
-    unsafe {
-        let root: ID3D12RootSignature = device.CreateRootSignature(0, code)?;
-        let pso: ID3D12PipelineState =
-            device.CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                pRootSignature: std::mem::transmute_copy(&root),
-                CS: D3D12_SHADER_BYTECODE {
-                    pShaderBytecode: code.as_ptr().cast(),
-                    BytecodeLength: code.len(),
-                },
-                ..Default::default()
-            })?;
-        Ok((root, pso))
-    }
+    let root = root_signature(device)?;
+    // SAFETY: the blob's bytes and the root signature outlive the call.
+    let pso: ID3D12PipelineState = unsafe {
+        device.CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
+            pRootSignature: std::mem::transmute_copy(&root),
+            CS: D3D12_SHADER_BYTECODE {
+                pShaderBytecode: code.as_ptr().cast(),
+                BytecodeLength: code.len(),
+            },
+            ..Default::default()
+        })?
+    };
+    Ok((root, pso))
 }
 
 fn make() -> windows::core::Result<State> {
