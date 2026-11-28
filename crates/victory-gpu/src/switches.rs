@@ -50,6 +50,10 @@ pub(crate) static ASYNC_PRESENT: Toggle = Toggle::flag("VICTORY_ASYNC_PRESENT");
 /// the first call with it off).
 pub(crate) static BIND_CACHE: Toggle = Toggle::flag("VICTORY_BIND_CACHE");
 
+/// `VICTORY_DESC_MEMCPY` (`crate::descriptor::bytes`; what it kept goes
+/// at the first view made with it off).
+pub(crate) static DESC_MEMCPY: Toggle = Toggle::flag("VICTORY_DESC_MEMCPY");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -73,7 +77,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 14] = [
+pub static TABLE: [Entry; 15] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -96,6 +100,11 @@ pub static TABLE: [Entry; 14] = [
     },
     Entry {
         toggle: &MAPPED_BATCH,
+        part: "preparo",
+        inert: &[],
+    },
+    Entry {
+        toggle: &DESC_MEMCPY,
         part: "preparo",
         inert: &[],
     },
