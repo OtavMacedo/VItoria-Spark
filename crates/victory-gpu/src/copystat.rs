@@ -1225,6 +1225,19 @@ fn log_memory() {
             },
         );
     }
+    // The index against a walk over every texture (`VICTORY_SWEEP_CHECK`).
+    if let Some(c) = crate::placed_at::check::counts() {
+        tracing::info!(
+            "memory, placed textures over unmapped title memory, the index checked against a walk \
+             over every texture (VICTORY_SWEEP_CHECK, one call in {}): {} calls checked, {} \
+             differed ({} textures only the walk found, {} only the index found)",
+            c[0],
+            c[1],
+            c[2],
+            c[3],
+            c[4],
+        );
+    }
     // What `crate::freed` let go, once it did anything.
     if let Some(freed) = crate::freed::counts() {
         tracing::info!(

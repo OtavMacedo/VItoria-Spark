@@ -2117,21 +2117,10 @@ pub(crate) fn evict_placed_in(base: u64, len: u64) -> u64 {
             crate::host::retire(host);
         }
     };
+    #[cfg(feature = "diagnostics")]
+    check_index_against_walk(base, len);
     let looked = if crate::switches::SWEEP_WALK.on() {
-        let all = textures();
-        for &at in all.iter() {
-            // SAFETY: a texture leaves the table before it is freed, under
-            // the lock held here (`Drop for Resource`).
-            let r = unsafe { &*(at as *const Resource) };
-            if !r.host.placed.load(Relaxed) || !fills(&r.desc) {
-                continue;
-            }
-            let size = footprint(&r.desc).map_or(0, |f| f.size);
-            if ranges_overlap(r.data() as u64, size, base, len) {
-                let_go(at, r);
-            }
-        }
-        all.len() as u64
+        walk_placed_in(base, len, |at, r, _| let_go(at, r))
     } else {
         let index = placed_at();
         index.each_over(base, len, |at| {
@@ -2153,6 +2142,85 @@ pub(crate) fn evict_placed_in(base: u64, len: u64) -> u64 {
         });
     }
     went
+}
+
+/// Calls `each` with every placed texture the title fills whose bytes
+/// (worked out from its layout) share one with `[base, base + len)`, its
+/// resource and those bytes `[start, end)`, walking every title texture
+/// under the lock of their table: what [`evict_placed_in`] looked at before
+/// [`PLACED_AT`], and still does with `VICTORY_SWEEP_WALK=1`. Returns how
+/// many textures it walked.
+#[cfg(windows)]
+fn walk_placed_in(base: u64, len: u64, mut each: impl FnMut(usize, &Resource, (u64, u64))) -> u64 {
+    let all = textures();
+    for &at in all.iter() {
+        // SAFETY: a texture leaves the table before it is freed, under the
+        // lock held here (`Drop for Resource`).
+        let r = unsafe { &*(at as *const Resource) };
+        if !r.host.placed.load(std::sync::atomic::Ordering::Relaxed) || !fills(&r.desc) {
+            continue;
+        }
+        let size = footprint(&r.desc).map_or(0, |f| f.size);
+        let start = r.data() as u64;
+        if ranges_overlap(start, size, base, len) {
+            each(at, r, (start, start.saturating_add(size)));
+        }
+    }
+    all.len() as u64
+}
+
+/// With `VICTORY_SWEEP_CHECK` (`crate::placed_at::check`), at one call of
+/// [`evict_placed_in`] in so many: the placed textures over `[base, base +
+/// len)` as [`PLACED_AT`] finds them against those [`walk_placed_in`]
+/// finds, before either lets anything go. Under the lock [`texture_at`]
+/// makes and marks placed textures under, so that neither side sees a
+/// texture the other does not yet; what differs is counted and, for the
+/// first calls, logged with the bytes each side has for the texture.
+#[cfg(all(windows, feature = "diagnostics"))]
+fn check_index_against_walk(base: u64, len: u64) {
+    use std::fmt::Write as _;
+    use std::sync::atomic::Ordering::Relaxed;
+    if !crate::placed_at::check::due() {
+        return;
+    }
+    let _marking = PLACED_TEXTURES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut walked = Vec::new();
+    walk_placed_in(base, len, |at, _, bytes| walked.push((at, bytes)));
+    let index = placed_at();
+    let mut found = Vec::new();
+    index.each_over(base, len, |at| found.push(at));
+    let (walk_only, index_only) =
+        crate::placed_at::check::differ(walked.iter().map(|&(at, _)| at).collect(), found);
+    let mut said = Vec::new();
+    for &at in walk_only.iter().take(8) {
+        let bytes = walked.iter().find(|w| w.0 == at).map_or((0, 0), |w| w.1);
+        said.push(format!(
+            "walk only {at:#x}: bytes {:#x}..{:#x}, in the index with {:x?}",
+            bytes.0,
+            bytes.1,
+            index.extent_of(at)
+        ));
+    }
+    for &at in index_only.iter().take(8) {
+        // SAFETY: a texture leaves the index before it is freed, under the
+        // lock held here (`Drop for Resource`).
+        let r = unsafe { &*(at as *const Resource) };
+        let mut word = format!(
+            "index only {at:#x}: in the index with {:x?}",
+            index.extent_of(at)
+        );
+        let size = footprint(&r.desc).map_or(0, |f| f.size);
+        let _ = write!(
+            word,
+            ", its layout says {:#x}+{size:#x}, placed {}, filled by the title {}",
+            r.data() as u64,
+            r.host.placed.load(Relaxed),
+            fills(&r.desc)
+        );
+        said.push(word);
+    }
+    drop(index);
+    crate::placed_at::check::note(base, len, walk_only.len(), index_only.len(), &said);
 }
 
 /// Since the start: calls of [`evict_placed_in`] that looked (the sweep
@@ -3737,7 +3805,6 @@ mod tests {
     #[cfg(all(windows, feature = "diagnostics"))]
     #[test]
     fn alias_after_title_upload_copies_the_gpu_atlas() {
-        use std::sync::atomic::Ordering::Relaxed;
         use windows::Win32::Graphics::Direct3D12::*;
 
         let Some(host) = crate::host::host() else {
@@ -3775,7 +3842,7 @@ mod tests {
             ),
             S_OK
         );
-        resource(view).host.placed.store(true, Relaxed);
+        mark_placed(view);
         let held = alias_of(view).expect("an alias source");
         assert_eq!(held.get(), source);
         let written = host_resource(source).unwrap();
@@ -3959,8 +4026,6 @@ mod tests {
     #[cfg(all(windows, feature = "diagnostics"))]
     #[test]
     fn an_alias_source_is_held_after_the_title_releases_it() {
-        use std::sync::atomic::Ordering::Relaxed;
-
         let Some(_host) = crate::host::host() else {
             return;
         };
@@ -3996,7 +4061,7 @@ mod tests {
             ),
             S_OK
         );
-        resource(view).host.placed.store(true, Relaxed);
+        mark_placed(view);
         let held = alias_of(view).expect("an alias source");
         assert_eq!(held.get(), source);
         // The title lets go: the pin, not the title's reference, keeps the
@@ -4799,6 +4864,172 @@ float4 lit() : SV_Target { return 1.0; }
         resource_release(big);
         resource_release(target);
         assert!(over(at, 1 << 20).is_empty());
+        drop(memory);
+    }
+
+    /// The description `d` as the words the title passes [`texture_at`],
+    /// with `filler` in words 1 and 13 (its layout's filler).
+    #[cfg(windows)]
+    fn words(d: &ResourceDesc, filler: u32) -> [u32; 14] {
+        [
+            d.dimension,
+            filler,
+            d.alignment as u32,
+            (d.alignment >> 32) as u32,
+            d.width as u32,
+            (d.width >> 32) as u32,
+            d.height,
+            u32::from(d.depth_or_array_size) | u32::from(d.mip_levels) << 16,
+            d.format,
+            d.sample_count,
+            d.sample_quality,
+            d.layout,
+            d.flags,
+            filler,
+        ]
+    }
+
+    /// Placed textures made as the title's draws make them ([`texture_at`]:
+    /// some at one address with other descriptions, some asked for again
+    /// with other filler words, some render targets), beside textures at the
+    /// same addresses made otherwise (never placed): over every range,
+    /// [`PLACED_AT`] finds what the walk over every texture
+    /// ([`walk_placed_in`], `VICTORY_SWEEP_WALK=1`) finds, each texture once,
+    /// from the moment [`texture_at`] hands it out. Only this test's
+    /// textures are compared: other tests make theirs at the same time.
+    #[cfg(windows)]
+    #[test]
+    fn the_index_finds_what_the_walk_finds_for_textures_the_draws_place() {
+        use std::collections::BTreeSet;
+        const SPAN: u64 = 8 << 20;
+        let null = std::ptr::null();
+        let memory = vec![0u8; SPAN as usize + 0x1_0000];
+        let base = (memory.as_ptr() as u64).next_multiple_of(0x1_0000);
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut below = move |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let formats = [28u32, 61, 71, 77, 80, 83, 98];
+        let (mut placed, mut others, mut addresses) = (BTreeSet::new(), Vec::new(), Vec::new());
+        for _ in 0..600 {
+            let at = if !addresses.is_empty() && below(5) == 0 {
+                addresses[below(addresses.len() as u64) as usize]
+            } else {
+                base + below(SPAN) / 0x100 * 0x100
+            };
+            let side = 16u64 << below(6);
+            let mut d = ResourceDesc {
+                mip_levels: below(4) as u16,
+                ..texture(
+                    side,
+                    (side >> below(2)) as u32,
+                    formats[below(7) as usize],
+                    1,
+                )
+            };
+            if below(8) == 0 {
+                d.flags = 1;
+            }
+            let asked = words(&d, below(3) as u32);
+            // SAFETY: 56 bytes in the description's layout, as `texture_at` reads them.
+            let back = unsafe { asked.as_ptr().cast::<ResourceDesc>().read_unaligned() };
+            assert_eq!(
+                (back.width, back.height, back.mip_levels),
+                (d.width, d.height, d.mip_levels)
+            );
+            let t = texture_at(at, &asked).expect("a placed texture");
+            if placed.insert(t as usize) {
+                addresses.push(at);
+            }
+            // Marked and indexed by the time it is handed out.
+            assert!(
+                resource(t)
+                    .host
+                    .placed
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            );
+            let has_bytes = footprint(&d).is_some_and(|f| f.size > 0);
+            assert_eq!(placed_at().contains(t as usize), fills(&d) && has_bytes);
+            if below(6) == 0 {
+                let mut other = null;
+                assert_eq!(
+                    create_at_address(null, at, &d, 0, null.cast(), &RESOURCE_IIDS[0], &mut other),
+                    S_OK
+                );
+                others.push(other);
+            }
+        }
+        assert!(
+            texture_at(base, &words(&buffer(256), 0)).is_none(),
+            "a buffer is not placed"
+        );
+        let mine: BTreeSet<usize> = placed
+            .iter()
+            .copied()
+            .chain(others.iter().map(|&t| t as usize))
+            .collect();
+        let walk = |b: u64, l: u64| {
+            let mut v = Vec::new();
+            walk_placed_in(b, l, |at, _, _| {
+                if mine.contains(&at) {
+                    v.push(at);
+                }
+            });
+            v.sort_unstable();
+            v
+        };
+        let index = |b: u64, l: u64| {
+            let mut v = Vec::new();
+            placed_at().each_over(b, l, |at| {
+                if mine.contains(&at) {
+                    v.push(at);
+                }
+            });
+            v.sort_unstable();
+            v
+        };
+        let mut found = 0;
+        for _ in 0..3_000 {
+            let b = base - 0x1_0000 + below(SPAN + 0x2_0000);
+            let l = match below(4) {
+                0 => below(0x100),
+                1 => below(4 << 20),
+                _ => below(0x4_0000),
+            };
+            let (w, i) = (walk(b, l), index(b, l));
+            assert_eq!(i, w, "{b:#x}+{l:#x}");
+            assert!(i.windows(2).all(|p| p[0] != p[1]), "each once");
+            found += i.len();
+        }
+        assert!(found > 0);
+        // All of it: every placed texture the title fills, nothing else.
+        let all = index(base - 0x1_0000, SPAN * 2);
+        assert_eq!(all, walk(base - 0x1_0000, SPAN * 2));
+        let filled: Vec<usize> = placed
+            .iter()
+            .copied()
+            .filter(|&t| {
+                let d = &resource(t as This).desc;
+                fills(d) && footprint(d).is_some_and(|f| f.size > 0)
+            })
+            .collect();
+        assert!(!filled.is_empty() && filled.len() < placed.len());
+        assert_eq!(all, filled);
+        // Out of `texture_at`'s table (it keeps them for the run) and freed.
+        PLACED_TEXTURES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, t| !placed.contains(&*t));
+        for &t in placed.iter() {
+            resource_release(t as This);
+        }
+        for &t in &others {
+            resource_release(t);
+        }
+        assert!(index(base - 0x1_0000, SPAN * 2).is_empty());
         drop(memory);
     }
 

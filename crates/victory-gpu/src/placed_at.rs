@@ -90,6 +90,13 @@ impl PlacedAt {
         self.extent.contains_key(&texture)
     }
 
+    /// The bytes `[start, end)` texture `texture` is kept with, if it is
+    /// kept (for [`check`]'s log).
+    #[cfg(any(test, feature = "diagnostics"))]
+    pub(crate) fn extent_of(&self, texture: usize) -> Option<(u64, u64)> {
+        self.extent.get(&texture).copied()
+    }
+
     /// Calls `each` once for every texture that shares a byte with `[base,
     /// base + len)` (as `crate::resource::ranges_overlap` says), in bucket
     /// order. Returns how many entries were looked at: the cost of the
@@ -112,6 +119,114 @@ impl PlacedAt {
             }
         }
         looked
+    }
+}
+
+/// The index checked against a walk over every texture, one call in so
+/// many (`VICTORY_SWEEP_CHECK`, the diagnostics build alone; off by
+/// default): at such a call of `crate::resource::evict_placed_in` both
+/// find the placed textures over the range, and what one found and the
+/// other did not is counted and, for the first calls that differ, logged.
+/// The walk is the one `VICTORY_SWEEP_WALK=1` does (some 1.5 ms a call with
+/// a loaded world's textures), so one call in 64 by default.
+///
+/// - `VICTORY_SWEEP_CHECK=1`: one call in [`DEFAULT_EVERY`]; `=N` (2 or
+///   more): one call in N; unset, `0` or anything else: off.
+/// - Not in the table of switches that may alternate (`crate::switches`):
+///   it changes nothing but adds a walk to the calls it checks, so an arm
+///   with it would only measure its own cost. Read once.
+#[cfg(any(test, feature = "diagnostics"))]
+pub(crate) mod check {
+    #[cfg(feature = "diagnostics")]
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// One call in so many with `VICTORY_SWEEP_CHECK=1`.
+    pub(crate) const DEFAULT_EVERY: u64 = 64;
+
+    /// The calls logged when they differ; the rest are only counted.
+    #[cfg(feature = "diagnostics")]
+    const LOGGED: u64 = 16;
+
+    /// One call in how many is checked, from the variable's value; 0 off.
+    pub(crate) fn every_from(value: Option<&str>) -> u64 {
+        match value.map(str::trim) {
+            Some("1") => DEFAULT_EVERY,
+            Some(v) => v.parse::<u64>().ok().filter(|&n| n >= 2).unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// [`every_from`] of `VICTORY_SWEEP_CHECK`, read once.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn every() -> u64 {
+        static EVERY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        *EVERY.get_or_init(|| every_from(std::env::var("VICTORY_SWEEP_CHECK").ok().as_deref()))
+    }
+
+    /// Calls seen with the check on; then calls checked, calls that
+    /// differed, textures only the walk found and textures only the index
+    /// found, since the start.
+    #[cfg(feature = "diagnostics")]
+    static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+    /// Whether this call is one to check.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn due() -> bool {
+        let every = every();
+        every != 0 && COUNTS[0].fetch_add(1, Relaxed).is_multiple_of(every)
+    }
+
+    /// What the walk found and the index did not, and what the index found
+    /// and the walk did not: each sorted, without repeats.
+    pub(crate) fn differ(mut walk: Vec<usize>, mut index: Vec<usize>) -> (Vec<usize>, Vec<usize>) {
+        for v in [&mut walk, &mut index] {
+            v.sort_unstable();
+            v.dedup();
+        }
+        let only = |a: &[usize], b: &[usize]| -> Vec<usize> {
+            a.iter()
+                .copied()
+                .filter(|t| b.binary_search(t).is_err())
+                .collect()
+        };
+        (only(&walk, &index), only(&index, &walk))
+    }
+
+    /// A call checked over `[base, base + len)`: how many textures only the
+    /// walk and only the index found, and a word on each of them (logged
+    /// for the first calls that differ).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn note(base: u64, len: u64, walk_only: usize, index_only: usize, said: &[String]) {
+        COUNTS[1].fetch_add(1, Relaxed);
+        if walk_only == 0 && index_only == 0 {
+            return;
+        }
+        let nth = COUNTS[2].fetch_add(1, Relaxed);
+        COUNTS[3].fetch_add(walk_only as u64, Relaxed);
+        COUNTS[4].fetch_add(index_only as u64, Relaxed);
+        if nth < LOGGED {
+            tracing::warn!(
+                "placed textures over unmapped title memory {base:#x}+{len:#x}: the index and a walk over every texture differ (VICTORY_SWEEP_CHECK): {walk_only} only the walk found, {index_only} only the index found: {}",
+                said.join("; ")
+            );
+        }
+    }
+
+    /// For the memory line: one call in how many, calls checked, calls that
+    /// differed, textures only the walk found and only the index found.
+    /// `None` with the check off or before its first call.
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn counts() -> Option<[u64; 5]> {
+        let checked = COUNTS[1].load(Relaxed);
+        (every() != 0 && checked != 0).then(|| {
+            [
+                every(),
+                checked,
+                COUNTS[2].load(Relaxed),
+                COUNTS[3].load(Relaxed),
+                COUNTS[4].load(Relaxed),
+            ]
+        })
     }
 }
 
@@ -222,6 +337,8 @@ mod tests {
         assert!(index.remove(2));
         assert_eq!(over(&index, 0x10_0000, 0x4_0000), [1, 3]);
         assert!(index.contains(1) && !index.contains(2) && index.contains(3));
+        assert_eq!(index.extent_of(3), Some((0x10_0000, 0x10_0100)));
+        assert_eq!(index.extent_of(2), None);
     }
 
     #[test]
@@ -251,6 +368,33 @@ mod tests {
         assert_eq!(index.by_bucket.len(), 1);
         assert!(over(&index, 3 << 16, 1 << 16).is_empty());
         assert_eq!(over(&index, 9 << 16, 1), [2]);
+    }
+
+    #[test]
+    fn the_check_reads_its_variable() {
+        use check::{DEFAULT_EVERY, every_from};
+        assert_eq!(every_from(None), 0);
+        assert_eq!(every_from(Some("0")), 0);
+        assert_eq!(every_from(Some("")), 0);
+        assert_eq!(every_from(Some("yes")), 0);
+        assert_eq!(every_from(Some("1")), DEFAULT_EVERY);
+        assert_eq!(every_from(Some(" 1 ")), DEFAULT_EVERY);
+        assert_eq!(every_from(Some("2")), 2);
+        assert_eq!(every_from(Some("1000")), 1000);
+    }
+
+    #[test]
+    fn the_check_says_what_each_side_alone_found() {
+        use check::differ;
+        assert_eq!(differ(vec![3, 1, 2], vec![2, 3, 1]), (vec![], vec![]));
+        assert_eq!(differ(vec![], vec![]), (vec![], vec![]));
+        // Repeats count once; each side's own, sorted.
+        assert_eq!(
+            differ(vec![5, 1, 5, 9], vec![9, 4, 4]),
+            (vec![1, 5], vec![4])
+        );
+        assert_eq!(differ(vec![7], vec![]), (vec![7], vec![]));
+        assert_eq!(differ(vec![], vec![8, 6]), (vec![], vec![6, 8]));
     }
 
     #[test]
