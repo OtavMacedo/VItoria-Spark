@@ -15,7 +15,7 @@ GPU = "crates/victory-gpu/src/"
 FASE_DA_PARTE = {"copias": "copies", "copia_de_volta": "copy_back", "preparo": "preparing", "texturas": "textures",
                  "gpu": "gpu"}
 # Chaves alternáveis que não são liga/desliga: os dois valores a comparar.
-VALORES_AB = {"VICTORY_TEXTURE_ROOM_PERCENT": "80/94"}
+VALORES_AB = {"VICTORY_TEXTURE_ROOM_PERCENT": "80/94", "VICTORY_WIDE_THREADS": "4/8"}
 # Chaves cujo efeito na memória persiste depois que o braço troca (uma escrita perdida ou adiada fica velha até o
 # fim da execução): no A/B na execução os outros braços herdam esse estado, então o tempo vale e a imagem por
 # braço não; a imagem se julga com execuções separadas.

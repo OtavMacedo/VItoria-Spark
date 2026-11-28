@@ -1900,19 +1900,43 @@ type Job = Box<dyn FnOnce() + Send>;
 struct Workers {
     jobs: Mutex<std::collections::VecDeque<Job>>,
     more: std::sync::Condvar,
+    /// Threads kept: as many as `VICTORY_WIDE_THREADS` asks for at some
+    /// time of the run (`crate::switches::WIDE_THREADS`), a quarter of the
+    /// logical processors (2 to 6) without it.
+    kept: usize,
+    /// How many of them take jobs now, those numbered below it; changed
+    /// only under the `jobs` lock. All of them unless the switch alternates.
+    working: std::sync::atomic::AtomicUsize,
+    /// Where the threads numbered from [`Workers::working`] up wait: told
+    /// when that number changes.
+    parked: std::sync::Condvar,
 }
 
 fn workers() -> &'static Workers {
     static WORKERS: std::sync::OnceLock<Workers> = std::sync::OnceLock::new();
     static STARTED: std::sync::Once = std::sync::Once::new();
-    let workers = WORKERS.get_or_init(|| Workers {
-        jobs: Mutex::new(std::collections::VecDeque::new()),
-        more: std::sync::Condvar::new(),
+    let workers = WORKERS.get_or_init(|| {
+        let kept = (crate::switches::WIDE_THREADS.most() as usize).max(1);
+        Workers {
+            jobs: Mutex::new(std::collections::VecDeque::new()),
+            more: std::sync::Condvar::new(),
+            kept,
+            working: std::sync::atomic::AtomicUsize::new(kept),
+            parked: std::sync::Condvar::new(),
+        }
     });
     STARTED.call_once(|| {
-        let n = std::thread::available_parallelism()
-            .map_or(4, |n| n.get() / 4)
-            .clamp(2, 6);
+        let n = workers.kept;
+        if std::env::var_os("VICTORY_WIDE_THREADS").is_some() {
+            tracing::info!(
+                "threads kept for work spread over threads (VICTORY_WIDE_THREADS): {n}{}",
+                if crate::switches::WIDE_THREADS.alternates() {
+                    ", fewer of them working in the arm that asks for fewer"
+                } else {
+                    ""
+                }
+            );
+        }
         for i in 0..n {
             let _ = std::thread::Builder::new()
                 .name(format!("victory-wide-{i}"))
@@ -1923,6 +1947,16 @@ fn workers() -> &'static Workers {
                         let job = {
                             let mut jobs = workers.jobs.lock().unwrap_or_else(|e| e.into_inner());
                             loop {
+                                // Read under the lock it changes under: a
+                                // change is never missed between the look
+                                // and the wait.
+                                if i >= workers.working.load(Ordering::Relaxed) {
+                                    jobs = workers
+                                        .parked
+                                        .wait(jobs)
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    continue;
+                                }
                                 if let Some(job) = jobs.pop_front() {
                                     break job;
                                 }
@@ -1937,6 +1971,135 @@ fn workers() -> &'static Workers {
     workers
 }
 
+/// How many kept threads take jobs for a call of [`wide`] now: the value
+/// of `VICTORY_WIDE_THREADS` in force, never more than are kept.
+fn working_now(kept: usize) -> usize {
+    #[cfg(test)]
+    if let Some(n) = wide_forced::working() {
+        return n.clamp(1, kept);
+    }
+    (crate::switches::WIDE_THREADS.get() as usize).clamp(1, kept)
+}
+
+/// Whether a call of [`wide`] wakes one kept thread for each job past the
+/// one the calling thread takes, all of them only when there are jobs for
+/// all (`VICTORY_WIDE_WAKE_ONE=1`; off by default; `SPARK_AB` can
+/// alternate it: each call decides on its own).
+///
+/// Without it every call wakes every working kept thread, even for two
+/// jobs: those that find the queue empty go back to sleep, after a turn on
+/// a core the title's threads and the submitting thread want, and the
+/// calling thread pays a system call for each. A call of the refreshes or
+/// the compares is often a few jobs. With it the same jobs run on the same
+/// threads; nothing waits for a thread that was not woken, because the
+/// calling thread drains the queue itself before it waits.
+///
+/// After kylepelham/El1xr 65acbc8 (`VICTORY_WIDE_WAKE_ONE`), itself after
+/// readmet3xt-lab/foxhound 8c1fa5d, which counted 1.4 to 6.1 ms of the
+/// frame's chain in threads woken and not yet running, and 2.4 % of the
+/// submitting thread's samples in the wake calls. The bounded spin of the
+/// same commit (`VICTORY_WAIT_SPIN`) is left out: no measurement came with
+/// it.
+fn wake_one_now() -> bool {
+    #[cfg(test)]
+    if let Some(one) = wide_forced::wake_one() {
+        return one;
+    }
+    crate::switches::WIDE_WAKE_ONE.on()
+}
+
+/// How many working kept threads a call of [`wide`] with `jobs` jobs wakes
+/// (`working`: all of them, by `notify_all`). The calling thread takes a job
+/// itself.
+fn woken_for(jobs: usize, working: usize, one: bool) -> usize {
+    if one {
+        jobs.saturating_sub(1).min(working)
+    } else {
+        working
+    }
+}
+
+/// What [`wide`] did, for the frame line ([`wide_line`]).
+mod wide_wakes {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Since the last line: calls, jobs, kept threads woken (a wake of all
+    /// counted as all that work), kept threads working (summed over calls).
+    static COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+    /// Whether the counts are kept and said: only with one of the
+    /// switches, so that a run without them logs as before.
+    pub(super) fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| {
+            crate::switches::WIDE_WAKE_ONE.ever()
+                || std::env::var_os("VICTORY_WIDE_THREADS").is_some()
+        })
+    }
+
+    pub(super) fn count(jobs: usize, woken: usize, working: usize) {
+        if !on() {
+            return;
+        }
+        for (c, v) in COUNTS.iter().zip([1, jobs, woken, working]) {
+            c.fetch_add(v as u64, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn take() -> [u64; 4] {
+        [0, 1, 2, 3].map(|i| COUNTS[i].swap(0, Ordering::Relaxed))
+    }
+}
+
+/// The frame line of the spread work, with `VICTORY_WIDE_WAKE_ONE` or
+/// `VICTORY_WIDE_THREADS`: calls, jobs and kept threads woken per frame,
+/// and how many kept threads worked on average.
+pub(crate) fn wide_line(frames: f64) {
+    if !wide_wakes::on() {
+        return;
+    }
+    let [calls, jobs, woken, working] = wide_wakes::take();
+    if calls == 0 {
+        return;
+    }
+    tracing::info!(
+        "kept threads woken per frame for spread work (VICTORY_WIDE_WAKE_ONE={}): {:.0} for {:.0} calls of {:.0} jobs; \
+         {:.1} of {} kept threads working (VICTORY_WIDE_THREADS)",
+        u8::from(crate::switches::WIDE_WAKE_ONE.on()),
+        woken as f64 / frames,
+        calls as f64 / frames,
+        jobs as f64 / frames,
+        working as f64 / calls as f64,
+        workers().kept
+    );
+}
+
+/// Tests: what [`wide`] is told on the calling thread in place of the
+/// switches.
+#[cfg(test)]
+mod wide_forced {
+    thread_local! {
+        static WORKING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+        static WAKE_ONE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn working() -> Option<usize> {
+        WORKING.with(std::cell::Cell::get)
+    }
+
+    pub(super) fn set_working(n: Option<usize>) {
+        WORKING.with(|w| w.set(n));
+    }
+
+    pub(super) fn wake_one() -> Option<bool> {
+        WAKE_ONE.with(std::cell::Cell::get)
+    }
+
+    pub(super) fn set_wake_one(one: Option<bool>) {
+        WAKE_ONE.with(|w| w.set(one));
+    }
+}
+
 /// Runs `jobs` on the kept threads and on this one, and returns when all
 /// of them are done. The jobs copy and compare memory; they do not panic.
 fn wide(jobs: Vec<Job>) {
@@ -1947,9 +2110,12 @@ fn wide(jobs: Vec<Job>) {
         return;
     }
     let workers = workers();
+    let working = working_now(workers.kept);
+    let queued = jobs.len();
     let left = Arc::new((Mutex::new(jobs.len()), std::sync::Condvar::new()));
-    {
+    let changed = {
         let mut queue = workers.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = workers.working.swap(working, Ordering::Relaxed) != working;
         for job in jobs {
             let left = left.clone();
             queue.push_back(Box::new(move || {
@@ -1961,8 +2127,27 @@ fn wide(jobs: Vec<Job>) {
                 }
             }));
         }
+        changed
+    };
+    let woken = if changed {
+        // Those now parked leave the jobs' condvar, those now working
+        // leave the parking one.
+        workers.parked.notify_all();
+        working
+    } else {
+        woken_for(queued, working, wake_one_now())
+    };
+    wide_wakes::count(queued, woken, working);
+    if woken >= working {
+        workers.more.notify_all();
+    } else {
+        // Only threads that work wait on this condvar, so each word wakes
+        // one that takes a job; one that is busy looks at the queue before
+        // it waits again, and this thread takes what nobody took.
+        for _ in 0..woken {
+            workers.more.notify_one();
+        }
     }
-    workers.more.notify_all();
     loop {
         let job = workers
             .jobs
@@ -2389,7 +2574,10 @@ pub(crate) fn back_line(frames: f64) {
 
 #[cfg(test)]
 mod wide_tests {
-    use super::{Job, PIECE, Under, WIDE_JOB, copy_jobs, find_pieces, parse_under_threads, wide};
+    use super::{
+        Job, PIECE, Under, WIDE_JOB, copy_jobs, find_pieces, parse_under_threads, wide,
+        wide_forced, woken_for,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2421,6 +2609,121 @@ mod wide_tests {
         assert_eq!(parse_under_threads(Some("0")), 1);
         assert_eq!(parse_under_threads(Some("99")), 16);
         assert_eq!(parse_under_threads(Some("x")), 6);
+    }
+
+    /// Two jobs that each wait (a while at most) for the other to have
+    /// started: they are done only if a kept thread took one while this
+    /// thread ran the other. Whether both saw each other.
+    fn a_pair_meets() -> bool {
+        let started = Arc::new(AtomicUsize::new(0));
+        let met = Arc::new(AtomicUsize::new(0));
+        let jobs: Vec<Job> = (0..2)
+            .map(|_| {
+                let (started, met) = (started.clone(), met.clone());
+                Box::new(move || {
+                    started.fetch_add(1, Ordering::AcqRel);
+                    let began = std::time::Instant::now();
+                    while started.load(Ordering::Acquire) < 2 {
+                        if began.elapsed() > std::time::Duration::from_secs(10) {
+                            return;
+                        }
+                        std::thread::yield_now();
+                    }
+                    met.fetch_add(1, Ordering::AcqRel);
+                }) as Job
+            })
+            .collect();
+        wide(jobs);
+        met.load(Ordering::Acquire) == 2
+    }
+
+    /// However many kept threads work, and when that number changes from
+    /// one call to the next, every job runs once and a kept thread that
+    /// works takes jobs: those parked are not the only ones told.
+    #[test]
+    fn every_job_runs_with_any_number_of_threads_working() {
+        for working in [Some(1), Some(2), None, Some(1), Some(64), Some(2), None] {
+            wide_forced::set_working(working);
+            for n in [2usize, 3, 17, 300] {
+                let ran = Arc::new(AtomicUsize::new(0));
+                let jobs: Vec<Job> = (0..n)
+                    .map(|_| {
+                        let ran = ran.clone();
+                        Box::new(move || {
+                            ran.fetch_add(1, Ordering::Relaxed);
+                        }) as Job
+                    })
+                    .collect();
+                wide(jobs);
+                assert_eq!(ran.load(Ordering::Relaxed), n, "{working:?}, {n} jobs");
+            }
+            for _ in 0..20 {
+                assert!(a_pair_meets(), "{working:?}: no kept thread took a job");
+            }
+        }
+        wide_forced::set_working(None);
+    }
+
+    /// A wake of one kept thread per job past the caller's: for a call of
+    /// `j` jobs, `j - 1` of those that work, all of them when there are
+    /// jobs for all; without the switch always all.
+    #[test]
+    fn one_kept_thread_is_woken_per_job_past_the_callers() {
+        assert_eq!(woken_for(2, 4, true), 1);
+        assert_eq!(woken_for(4, 4, true), 3);
+        assert_eq!(woken_for(5, 4, true), 4);
+        assert_eq!(woken_for(300, 4, true), 4);
+        assert_eq!(woken_for(2, 1, true), 1);
+        assert_eq!(woken_for(0, 4, true), 0);
+        for jobs in [2, 3, 300] {
+            assert_eq!(woken_for(jobs, 4, false), 4);
+        }
+    }
+
+    /// No word is lost with a wake of one thread per job: every job runs,
+    /// and a pair of jobs that need each other at once is always done (a
+    /// woken thread took one), with as many threads working as kept, with
+    /// one, and when the number shrinks or grows between calls (a thread
+    /// that stops working must not stay where the word for a job goes).
+    #[test]
+    fn a_wake_of_one_thread_per_job_loses_no_job() {
+        wide_forced::set_wake_one(Some(true));
+        for round in 0..40 {
+            let working = match round % 4 {
+                0 => None,
+                1 | 2 => Some(1),
+                _ => Some(2),
+            };
+            wide_forced::set_working(working);
+            for n in [2usize, 3, 7, 64] {
+                let ran = Arc::new(AtomicUsize::new(0));
+                let jobs: Vec<Job> = (0..n)
+                    .map(|i| {
+                        let ran = ran.clone();
+                        Box::new(move || {
+                            if i % 3 == 1 {
+                                std::thread::sleep(std::time::Duration::from_micros(100));
+                            }
+                            ran.fetch_add(1, Ordering::Relaxed);
+                        }) as Job
+                    })
+                    .collect();
+                wide(jobs);
+                assert_eq!(ran.load(Ordering::Relaxed), n, "{working:?}, {n} jobs");
+            }
+            assert!(
+                a_pair_meets(),
+                "round {round}, {working:?}: the woken thread took no job"
+            );
+            // The kept threads asleep again before the next call's word.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert!(
+                a_pair_meets(),
+                "round {round}, {working:?}: the woken thread took no job"
+            );
+        }
+        wide_forced::set_working(None);
+        wide_forced::set_wake_one(None);
     }
 
     /// Every job runs once, however many there are, and `wide` returns
