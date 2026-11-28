@@ -1315,8 +1315,11 @@ pub(crate) extern "system" fn create_uav(
 /// can come in with other bytes there and each time be a new shape. Once
 /// the shapes are full every placed view is a table entry kept for the
 /// run: in another fork of the family, 34.9 million entries, 16.7 GB after
-/// 70 minutes. With the switch only the named fields are kept; the
-/// padding is zero.
+/// 70 minutes. The view description has such words too: the padding after
+/// a shader resource view's component mapping (the union that follows
+/// starts on 8 bytes) and the tail of the union that the view's dimension
+/// does not use ([`placed_view_words`]). With the switch only the named
+/// fields are kept; the rest is zero.
 fn placed_padding() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("VICTORY_PLACED_VIEW_PADDING").is_some_and(|v| v == "1"))
@@ -1333,6 +1336,40 @@ fn placed_resource_words(desc: *const [u32; 14], clean: bool) -> Option<[u32; 14
     Some(words)
 }
 
+/// The words of a placed view's description; with `clean`, those its kind
+/// does not use set to zero. The first ten words are the PC's view
+/// description: for a shader resource view the format, the dimension, the
+/// component mapping, a word of padding and the union's six words; for an
+/// unordered access view the format, the dimension and the union's eight
+/// words. Each dimension uses only the head of the union. Words 10 and on
+/// (the address and the console's own fields) are kept, and so is every
+/// word of an unknown dimension.
+fn placed_view_words(desc: *const [u32; 16], unordered: bool, clean: bool) -> Option<[u32; 16]> {
+    let mut d = words(desc)?;
+    if !clean {
+        return Some(d);
+    }
+    // Words of the union each dimension uses (D3D12_BUFFER_SRV and the like).
+    let (start, used) = if unordered {
+        // D3D12_UAV_DIMENSION: unknown, buffer, 1D, 1D array, 2D, 2D array,
+        // 2D MS, 2D MS array, 3D.
+        const USED: [usize; 9] = [0, 7, 1, 3, 2, 4, 0, 2, 3];
+        (2, USED.get(d[1] as usize).copied())
+    } else {
+        // D3D12_SRV_DIMENSION: unknown, buffer, 1D, 1D array, 2D, 2D array,
+        // 2D MS, 2D MS array, 3D, cube, cube array, acceleration structure.
+        const USED: [usize; 12] = [0, 5, 3, 5, 4, 6, 0, 2, 3, 3, 5, 2];
+        (4, USED.get(d[1] as usize).copied())
+    };
+    if let Some(used) = used.filter(|_| d[1] != 0) {
+        if !unordered {
+            d[3] = 0;
+        }
+        d[start + used..10].fill(0);
+    }
+    Some(d)
+}
+
 /// The view that device methods 0x230 and 0x238 describe
 /// ([`placed_padding`] says `clean`).
 fn placed_view(
@@ -1342,7 +1379,8 @@ fn placed_view(
     clean: bool,
 ) -> Option<View> {
     let resource = placed_resource_words(resource, clean)?;
-    Some(View::Placed(unordered, resource, words(desc)?))
+    let desc = placed_view_words(desc, unordered, clean)?;
+    Some(View::Placed(unordered, resource, desc))
 }
 
 /// Device methods 0x230 and 0x238: shader resource and unordered access
@@ -1586,6 +1624,64 @@ mod tests {
             assert_ne!(placed_view(unordered, &other, &view_desc, true), first);
         }
         assert_eq!(placed_view(false, std::ptr::null(), &view_desc, true), None);
+    }
+
+    /// With the padding left out, two placed views alike but for the view
+    /// words their kind does not use (the padding after the component
+    /// mapping, the union's unused tail) are one view; a used word still
+    /// tells them apart, and an unknown dimension keeps every word.
+    #[test]
+    fn placed_views_leave_out_unused_view_words() {
+        let resource = [1, 0, 0, 0, 0x4000, 0, 1, 0x10001, 0, 1, 0, 1, 0, 0];
+        // A structured buffer view: words 4-5 first element, 6 count, 7
+        // stride, 8 flags; 3 and 9 are not used.
+        let srv = [
+            0, 1, 0x1688, 0, 16, 0, 64, 16, 0, 0, 0x1000, 0x6, 0, 0, 0, 0,
+        ];
+        // An unordered buffer view: words 2-3 first element, 4 count, 5
+        // stride, 6-7 counter offset, 8 flags; 9 is not used.
+        let uav = [0, 1, 16, 0, 64, 16, 0, 0, 0, 0, 0x1000, 0x6, 0, 0, 0, 0];
+        for (unordered, desc, unused, used) in
+            [(false, srv, [3usize, 9], 6usize), (true, uav, [9, 9], 4)]
+        {
+            let first = placed_view(unordered, &resource, &desc, true);
+            assert_eq!(first, Some(View::Placed(unordered, resource, desc)));
+            let mut noisy = desc;
+            for w in unused {
+                noisy[w] = 0xdead_beef;
+            }
+            assert_eq!(
+                placed_view(unordered, &resource, &noisy, true),
+                first,
+                "unused words left out"
+            );
+            assert_ne!(
+                placed_view(unordered, &resource, &noisy, false),
+                first,
+                "kept without the switch"
+            );
+            let mut other = desc;
+            other[used] += 1;
+            assert_ne!(
+                placed_view(unordered, &resource, &other, true),
+                first,
+                "a used word counts"
+            );
+        }
+        // A 2D texture view uses four words of the union (4-7): 3, 8 and 9 go.
+        let mut tex = [
+            28, 4, 0x1688, 0x77, 0, 1, 0, 0, 0x55, 0x66, 0x2000, 0x6, 0, 0, 0, 0,
+        ];
+        let made = placed_view(false, &resource, &tex, true);
+        tex[3] = 0;
+        (tex[8], tex[9]) = (0, 0);
+        assert_eq!(made, Some(View::Placed(false, resource, tex)));
+        // An unknown dimension (past the table) keeps all.
+        let odd = [28, 40, 1, 2, 3, 4, 5, 6, 7, 8, 0x2000, 0x6, 0, 0, 0, 0];
+        assert_eq!(
+            placed_view(false, &resource, &odd, true),
+            Some(View::Placed(false, resource, odd))
+        );
     }
 
     /// What newer titles pass; tests use it throughout, so that reading the
