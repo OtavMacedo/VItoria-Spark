@@ -1004,14 +1004,16 @@ fn far_jump_to_end(p: &Program, b: usize) -> bool {
 /// Where the lanes that stay go when block `b` ends in an early-out: `s_cbranch_execz` to a
 /// block that only ends the program, or `s_cbranch_execnz` whose other way is a far jump to
 /// such a block (a program too long for the branch to reach its end). The branch is then
-/// left out and the code goes on there.
+/// left out and the code goes on there. The far form must branch forward over the jump: a
+/// loop's back edge of the same shape would lose the loop's only exit.
 fn early_out_continuation(p: &Program, b: usize) -> Option<usize> {
     let Exit::Branch { taken, not_taken } = p.blocks[b].exit else {
         return None;
     };
+    let forward = p.blocks[taken].offset > p.blocks[not_taken].offset;
     match p.blocks[b].insts.last()?.name() {
         "s_cbranch_execz" if ends_program(p, taken) => Some(not_taken),
-        "s_cbranch_execnz" if far_jump_to_end(p, not_taken) => Some(taken),
+        "s_cbranch_execnz" if forward && far_jump_to_end(p, not_taken) => Some(taken),
         _ => None,
     }
 }
@@ -2056,6 +2058,42 @@ mod tests {
                     .is_some_and(|i| i.name() == "s_cbranch_execz")
             })
             .count()
+    }
+
+    /// A loop whose back edge is `s_cbranch_execnz` and whose way out, once no lane is left,
+    /// is a far jump to the end. The branch goes back, so it is not an early-out: leaving it
+    /// out would take away the loop's only exit.
+    #[test]
+    fn a_loop_back_edge_over_a_far_jump_is_not_an_early_out() {
+        let p = build_words(
+            &[
+                0xBE85_0380, // s_mov_b32 s5, 0 (a branch may not go to the entry)
+                0x7D88_0000, // v_cmp_gt_u32 vcc, s0, v0 (the head of the loop)
+                0xBE8C_246A, // s_and_saveexec_b64 s[12:13], vcc
+                0xBF89_FFFD, // s_cbranch_execnz back to the head
+                0xBE8E_1F00, // s_getpc_b64 s[14:15]
+                0x800E_FF0E,
+                4 * 4,       // s_add_u32 s14, s14, the way to the end
+                0x820F_800F, // s_addc_u32 s15, s15, 0
+                0xBE80_200E, // s_setpc_b64 s[14:15]
+                S_ENDPGM,
+            ],
+            true,
+        );
+        let execnz = |p: &Program| {
+            p.blocks
+                .iter()
+                .filter(|b| {
+                    b.insts
+                        .last()
+                        .is_some_and(|i| i.name() == "s_cbranch_execnz")
+                })
+                .count()
+        };
+        assert_eq!(execnz(&p), 1);
+        assert!(without_early_outs(&p).is_none());
+        assert!(without_skips(&p, false).is_none());
+        assert!(without_skips(&p, true).is_none());
     }
 
     #[test]
