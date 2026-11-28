@@ -1930,7 +1930,6 @@ fn open(g: &mut Guards, start: usize, end: usize) -> bool {
 
 /// [`open`] for one range, without the other views of its pages.
 fn open_here(g: &mut Guards, start: usize, end: usize) -> bool {
-    use windows_sys::Win32::System::Memory::{PAGE_READWRITE, VirtualProtect};
     let blocks: Vec<usize> = g
         .protected
         .range(start / BLOCK..end.div_ceil(BLOCK))
@@ -1942,12 +1941,77 @@ fn open_here(g: &mut Guards, start: usize, end: usize) -> bool {
         // Before the block can be written ([`PUBLISHED`]; nothing to do
         // where no bit was ever set).
         PUBLISHED.clear(block);
-        let mut old = 0;
-        // SAFETY: a block we made read-only.
-        unsafe { VirtualProtect((block * BLOCK) as *const _, BLOCK, PAGE_READWRITE, &mut old) };
     }
+    unprotect(&blocks, crate::switches::UNGUARD_RUNS.on());
     !blocks.is_empty()
 }
+
+/// Gives write access back to `blocks` (ascending, each a block we made
+/// read-only). With `runs` (`VICTORY_UNGUARD_RUNS=1`), blocks that follow
+/// each other take one change of protection: each change makes every core
+/// forget the pages, under the guards' lock with the title's faults
+/// waiting. A run that is not of one allocation makes the call fail and
+/// change nothing; it is then done block by block. Unset or `0`: one change
+/// per block.
+fn unprotect(blocks: &[usize], runs: bool) {
+    use windows_sys::Win32::System::Memory::{PAGE_READWRITE, VirtualProtect};
+    let set = |from: usize, to: usize| {
+        let mut old = 0;
+        // SAFETY: title view memory we made read-only; only its protection
+        // changes, and a range that spans allocations fails as a whole.
+        unsafe {
+            VirtualProtect(
+                (from * BLOCK) as *const _,
+                (to - from) * BLOCK,
+                PAGE_READWRITE,
+                &mut old,
+            ) != 0
+        }
+    };
+    if !runs {
+        for &block in blocks {
+            set(block, block + 1);
+        }
+        return;
+    }
+    for (from, to) in block_runs(blocks) {
+        if to - from == 1 {
+            set(from, to);
+            continue;
+        }
+        let done = set(from, to);
+        #[cfg(any(test, feature = "diagnostics"))]
+        UNGUARD_RUNS[usize::from(!done)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !done {
+            for block in from..to {
+                set(block, block + 1);
+            }
+        }
+    }
+}
+
+/// The runs `[from, to)` of blocks that follow each other in `blocks`
+/// (ascending, no repeats), in order.
+fn block_runs(blocks: &[usize]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        let from = *blocks.get(i)?;
+        let mut to = from + 1;
+        i += 1;
+        while blocks.get(i) == Some(&to) {
+            to += 1;
+            i += 1;
+        }
+        Some((from, to))
+    })
+}
+
+/// Diagnostics, since the start: runs of guarded blocks opened by one
+/// change of protection (`VICTORY_UNGUARD_RUNS`), and runs whose change
+/// failed and were opened block by block.
+#[cfg(any(test, feature = "diagnostics"))]
+pub(crate) static UNGUARD_RUNS: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
 /// Before our own write into title memory `[at, at + len)` through the
 /// kernel (which does not fault into our handler): opens its guarded blocks.
@@ -2367,6 +2431,81 @@ pub(crate) mod tests {
             )
             .is_none()
         );
+        // SAFETY: our allocation.
+        unsafe { VirtualFree(p as *mut _, 0, MEM_RELEASE) };
+    }
+
+    /// Blocks that follow each other make one run; a gap starts another.
+    #[test]
+    fn blocks_in_a_row_make_one_run() {
+        assert_eq!(block_runs(&[]).count(), 0);
+        assert_eq!(block_runs(&[7]).collect::<Vec<_>>(), [(7, 8)]);
+        assert_eq!(
+            block_runs(&[1, 2, 3, 5, 8, 9]).collect::<Vec<_>>(),
+            [(1, 4), (5, 6), (8, 10)]
+        );
+    }
+
+    /// Opened by runs, read-only blocks become writable and the others keep
+    /// their protection; a run that is not all committed is opened block
+    /// by block. (`VICTORY_UNGUARD_RUNS`.)
+    #[test]
+    fn guarded_blocks_in_a_row_are_opened_together() {
+        use windows_sys::Win32::System::Memory::{MEM_DECOMMIT, PAGE_READONLY, VirtualProtect};
+        // SAFETY: a fresh allocation of ours, freed at the end.
+        let p = unsafe {
+            VirtualAlloc(
+                std::ptr::null(),
+                5 * BLOCK,
+                MEM_RESERVE | MEM_COMMIT,
+                PAGE_READWRITE,
+            )
+        } as usize;
+        assert_ne!(p, 0);
+        let b = p.div_ceil(BLOCK);
+        let at = |n: usize| (b + n) * BLOCK;
+        let read_only = |from: usize, to: usize| {
+            let mut old = 0;
+            // SAFETY: committed blocks of ours.
+            let done = unsafe {
+                VirtualProtect(
+                    at(from) as *const _,
+                    (to - from) * BLOCK,
+                    PAGE_READONLY,
+                    &mut old,
+                )
+            };
+            assert_ne!(done, 0);
+        };
+        // (Other tests open runs meanwhile: at least ours.)
+        let runs = || {
+            UNGUARD_RUNS
+                .each_ref()
+                .map(|n| n.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        read_only(0, 4);
+        let before = runs();
+        unprotect(&[b, b + 1, b + 3], true);
+        assert!(writable(at(0)) && writable(at(1)) && writable(at(3)));
+        assert!(!writable(at(2)), "a block left out keeps its protection");
+        assert!(runs()[0] > before[0]);
+        // A run whose last block is not committed: the change fails whole
+        // and the others are opened one by one.
+        read_only(0, 4);
+        // SAFETY: a block of ours, no longer used.
+        assert_ne!(
+            unsafe { VirtualFree(at(3) as *mut _, BLOCK, MEM_DECOMMIT) },
+            0
+        );
+        let before = runs();
+        unprotect(&[b + 1, b + 2, b + 3], true);
+        assert!(runs()[1] > before[1]);
+        assert!(writable(at(1)) && writable(at(2)));
+        assert!(!writable(at(0)));
+        // Block by block, as without the switch.
+        read_only(0, 3);
+        unprotect(&[b, b + 1, b + 2], false);
+        assert!((0..3).all(|n| writable(at(n))));
         // SAFETY: our allocation.
         unsafe { VirtualFree(p as *mut _, 0, MEM_RELEASE) };
     }

@@ -292,6 +292,55 @@ pub fn keep_on_fast_cores(what: &str) {
     }
 }
 
+/// The priority `VICTORY_HELPER_PRIORITY` asks for: above normal with `1`;
+/// otherwise none, and the thread keeps the normal priority it was made with.
+fn helper_priority_of(value: Option<&str>) -> Option<i32> {
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_ABOVE_NORMAL;
+    (value.map(str::trim) == Some("1")).then_some(THREAD_PRIORITY_ABOVE_NORMAL)
+}
+
+/// Raises the calling thread above normal, ahead of the title's threads,
+/// with `VICTORY_HELPER_PRIORITY=1` (unset or anything else: the normal
+/// priority it was made with). Called as they start by the threads of ours
+/// a frame waits for: the submit thread (`crate::queue`), the relay and
+/// late-wait threads that land and settle submissions sent ahead
+/// (`crate::host`), and the wide threads that share the submitting thread's
+/// copies and compares (`crate::shadow`). Read once; a thread already
+/// running keeps its priority, so the switch cannot alternate in a run.
+///
+/// Where the title's own workers hold every processor, a thread of ours
+/// that was woken can wait milliseconds to run while the frame waits for
+/// it. The threads that record lists stay at normal: there are several,
+/// and above normal they could take every core from the title's threads.
+///
+/// After ProjectLeonidaL commit 8fbb8ae8, from readmet3xt-lab/foxhound
+/// 002cf4a and 80c70b7 (through trustno1-coder/VIctory-NVIDIA), GPL-3.0.
+pub fn raise_helper(what: &str) {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+    static PRIORITY: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    let priority = *PRIORITY.get_or_init(|| {
+        let value = std::env::var("VICTORY_HELPER_PRIORITY").ok();
+        let priority = helper_priority_of(value.as_deref());
+        if priority.is_some() {
+            tracing::info!(
+                "our threads a frame waits for run above normal (VICTORY_HELPER_PRIORITY=1)"
+            );
+        }
+        priority
+    });
+    let Some(priority) = priority else {
+        return;
+    };
+    // SAFETY: this thread's own pseudo handle; only its priority changes.
+    if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
+        tracing::warn!(
+            what,
+            error = %std::io::Error::last_os_error(),
+            "the thread's priority could not be raised"
+        );
+    }
+}
+
 /// Asks the system to run the calling thread on the slow cores only, where
 /// the processor has two kinds and at least eight slow logical processors
 /// (a helper that must not take a fast core from the title's threads).
@@ -743,6 +792,23 @@ fn kinds(frames: &[Frame]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_raises_the_helpers() {
+        use windows_sys::Win32::System::Threading::THREAD_PRIORITY_ABOVE_NORMAL;
+        assert_eq!(
+            helper_priority_of(Some("1")),
+            Some(THREAD_PRIORITY_ABOVE_NORMAL)
+        );
+        assert_eq!(
+            helper_priority_of(Some(" 1 ")),
+            Some(THREAD_PRIORITY_ABOVE_NORMAL)
+        );
+        assert_eq!(helper_priority_of(None), None);
+        assert_eq!(helper_priority_of(Some("0")), None);
+        assert_eq!(helper_priority_of(Some("2")), None);
+        assert_eq!(helper_priority_of(Some("on")), None);
+    }
 
     fn frame(number: u64, ms: f64) -> Frame {
         let mut f = Frame {

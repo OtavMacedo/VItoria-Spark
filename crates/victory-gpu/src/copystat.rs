@@ -954,6 +954,18 @@ fn log_memory() {
         mb(own[3]),
         own[7],
     );
+    let backs: Vec<u64> = crate::host::READ_BACKS
+        .iter()
+        .map(|b| b.load(Relaxed))
+        .collect();
+    tracing::info!(
+        "memory, read-back buffers since the start: {} made, {} taken from those kept; when their \
+         lists were done {} kept and {} let go (VICTORY_READ_BACK_POOL)",
+        backs[0],
+        backs[1],
+        backs[2],
+        backs[3],
+    );
     // Round 2: what the view table still holds and what goes around it,
     // what host lists cost, the card's share that is the layer's own or
     // the title's no more, and which big blocks are ours.
@@ -1294,9 +1306,13 @@ pub(crate) fn log(frames: f64) {
     crate::draw::tables_line(frames);
     let [together, written, mapped] =
         [0, 1, 2].map(|n| crate::watch::ALIASES[n].load(std::sync::atomic::Ordering::Relaxed));
+    let [runs, runs_failed] =
+        [0, 1].map(|n| crate::watch::UNGUARD_RUNS[n].load(std::sync::atomic::Ordering::Relaxed));
     tracing::info!(
         "guards over several views of a page, since the start: {together} blocks guarded with their other views, \
-         {written} views opened by a write through another, {mapped} ranges opened because a view of them was mapped"
+         {written} views opened by a write through another, {mapped} ranges opened because a view of them was mapped; \
+         runs of guarded blocks opened by one change of protection: {runs}, and {runs_failed} done block by block \
+         (VICTORY_UNGUARD_RUNS)"
     );
     // Where the wall clock of a frame goes: the phases of a frame, the
     // processor time of the whole process, and what each submitting and

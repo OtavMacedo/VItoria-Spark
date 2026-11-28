@@ -151,6 +151,12 @@ pub(crate) struct Back {
 }
 
 impl Back {
+    /// Its read-back buffer, for the list that held it to give back when it
+    /// is reset (`crate::host`, `VICTORY_READ_BACK_POOL`).
+    pub(crate) fn into_buffer(self) -> ID3D12Resource {
+        self.buffer
+    }
+
     pub(crate) fn range(&self) -> (usize, usize) {
         (self.ticket.at, self.ticket.end)
     }
