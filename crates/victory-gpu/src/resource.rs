@@ -2450,7 +2450,11 @@ fn hand_out_resource(
     #[cfg(windows)]
     if desc.dimension == BUFFER {
         let at = std::ptr::from_ref::<Resource>(&resource) as usize;
-        crate::shadow::register(at, resource.data() as u64, desc.width);
+        // D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS: without it no view of
+        // the buffer itself can be written.
+        const UNORDERED: u32 = 4;
+        let read_only = desc.flags & UNORDERED == 0;
+        crate::shadow::register(at, resource.data() as u64, desc.width, read_only);
     }
     object::hand_out(RESOURCE, resource, iid, &RESOURCE_IIDS, out)
 }
