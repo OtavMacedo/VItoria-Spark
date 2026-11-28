@@ -2406,8 +2406,10 @@ fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     // The switch is read here, not first in the handler ([`open`] asks
     // it): reading the environment allocates. So are the rests' and the
-    // clock's ([`rest`]).
+    // clock's ([`rest`]), and the switch [`open_here`] asks
+    // (`VICTORY_UNGUARD_RUNS`).
     light_kept();
+    crate::switches::UNGUARD_RUNS.get();
     crate::switches::GUARD_REST.get();
     crate::switches::GUARD_HOT.get();
     rest::now_us();
