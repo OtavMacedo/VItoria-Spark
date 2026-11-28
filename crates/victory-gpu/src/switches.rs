@@ -88,6 +88,11 @@ pub(crate) static UNGUARD_RUNS: Toggle = Toggle::flag("VICTORY_UNGUARD_RUNS");
 /// arm is let go, not kept.
 pub(crate) static READ_BACK_POOL: Toggle = Toggle::flag("VICTORY_READ_BACK_POOL");
 
+/// `VICTORY_LAND_WIDE` (`crate::land`): each landing of what shaders wrote
+/// to copies in the card's memory decides on its own whether its pieces go
+/// to several threads; title memory ends the same either way.
+pub(crate) static LAND_WIDE: Toggle = Toggle::flag("VICTORY_LAND_WIDE");
+
 /// `VICTORY_UNDER_WIDE` (`crate::shadow`): each range of the merge under
 /// flights' writes decides on its own; the bytes put in are the same.
 pub(crate) static UNDER_WIDE: Toggle = Toggle::flag("VICTORY_UNDER_WIDE");
@@ -167,6 +172,12 @@ fn marked(value: Option<&str>) -> bool {
     value.is_some_and(|v| v.trim() == "1")
 }
 
+/// `VICTORY_RELAY` set to anything but `1` or `2`: no thread lands
+/// flights (`crate::shadow::relay`).
+fn no_relay(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v != "1" && v != "2")
+}
+
 /// `VICTORY_TEXTURE_SWEEP=0`: no host copy of a texture is let go
 /// (`crate::resource::evict_placed_in` looks at nothing).
 fn no_sweep(value: Option<&str>) -> bool {
@@ -174,7 +185,7 @@ fn no_sweep(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 30] = [
+pub static TABLE: [Entry; 31] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -301,6 +312,15 @@ pub static TABLE: [Entry; 30] = [
         toggle: &UNDER_WIDE,
         part: "preparo",
         inert: &[],
+    },
+    Entry {
+        toggle: &LAND_WIDE,
+        part: "copia_de_volta",
+        inert: &[(
+            "VICTORY_RELAY",
+            no_relay,
+            "without the relay what shaders wrote is merged where the flights are waited for, not landed",
+        )],
     },
     Entry {
         toggle: &WIDE_THREADS,
@@ -451,6 +471,10 @@ mod tests {
         assert_eq!(commit_shrink_percent(Some(" 85 ")), 85);
         assert_eq!(commit_shrink_percent(Some("10")), 50);
         assert_eq!(commit_shrink_percent(Some("100")), 99);
+        assert!(!no_relay(None));
+        assert!(!no_relay(Some("1")));
+        assert!(!no_relay(Some("2")));
+        assert!(no_relay(Some("0")));
     }
 
     /// Without the variable, a quarter of the logical processors, 2 to 6;
