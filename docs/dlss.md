@@ -18,7 +18,7 @@ segue com o próprio upscaler, como sem a variável.
 2. `VICTORY_STREAMLINE_DIR=<a pasta bin\x64>`. Não há padrão: sem a variável, o DLSS fica desligado.
 3. Confira o PC sem o título (alguns segundos):
    - `victory upscaler-check`: o Streamline carrega e diz se esta placa tem DLSS.
-   - `victory upscaler-check --device [--output 1080p|1440p|LxA]`: cria o device, entrega ao Streamline, roda o
+   - `victory upscaler-check --device [--output 1440p|LxA]`: cria o device, entrega ao Streamline, roda o
      DLSS três vezes em texturas de teste no modo de `VICTORY_DLSS_MODE` e lista os tamanhos de render do DLSS para
      a saída. Termina com `Streamline shut down: ok (0)`.
 
@@ -37,8 +37,8 @@ Windows 10 2004 ou mais novo e uma GeForce RTX.
 | `VICTORY_DLSS_REACTIVE` | `0` | ligado | `0`: a máscara reativa do título não vai ao DLSS |
 | `VICTORY_STREAMLINE_LOG` | uma pasta | nenhuma | log do próprio Streamline nessa pasta, detalhado |
 
-Com `VICTORY_OUTPUT_RESOLUTION` (saída 1080p ou 1440p no perfil Series X), a cena fica na escala do modo do DLSS e
-`VICTORY_SCENE_SCALE` é ignorada (o log avisa).
+Com `VICTORY_OUTPUT_RESOLUTION` (saída de 2560x1440 a 3840x2160 no perfil Series X), a cena fica na escala do modo
+do DLSS e `VICTORY_SCENE_SCALE` é ignorada (o log avisa).
 
 ## Como funciona
 

@@ -121,7 +121,8 @@ enum Command {
     /// times on stand-in textures.
     #[cfg(windows)]
     UpscalerCheck {
-        /// The output size: `1080p`, `1440p` or `<width>x<height>` (16:9).
+        /// The output size: `1440p` or `<width>x<height>` (16:9, 2560x1440 to
+        /// 3840x2160, the sizes the title makes).
         #[arg(long, default_value = "1440p")]
         output: String,
         /// Make the host device and run DLSS on it.
