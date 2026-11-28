@@ -64,6 +64,8 @@ mod inplace;
 mod launch;
 pub mod list;
 #[cfg(windows)]
+mod list_reaper;
+#[cfg(windows)]
 mod memory;
 pub mod object;
 #[cfg(windows)]

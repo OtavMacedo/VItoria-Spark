@@ -34,6 +34,23 @@ pub(crate) static WIDE_MERGE: Toggle = Toggle::flag("VICTORY_WIDE_MERGE");
 /// whether its refreshes go to the helper threads.
 pub(crate) static WIDE_REFRESH: Toggle = Toggle::flag("VICTORY_WIDE_REFRESH");
 
+/// `VICTORY_WIDE_THREADS` (`crate::shadow`): how many of the threads kept
+/// for work spread over threads take jobs ([`wide_threads`]). As many
+/// threads are kept as the largest value of the run asks for, and the
+/// others are parked while a smaller one is in force, so the number may
+/// alternate: `SPARK_AB=VICTORY_WIDE_THREADS=4/8` (the plain name would
+/// give the arms `0`, the default, and `1`).
+pub(crate) static WIDE_THREADS: Toggle = Toggle::new("VICTORY_WIDE_THREADS", wide_threads);
+
+/// `VICTORY_WIDE_WAKE_ONE` (`crate::shadow`): each call of the spread work
+/// decides on its own how many kept threads it wakes.
+pub(crate) static WIDE_WAKE_ONE: Toggle = Toggle::flag("VICTORY_WIDE_WAKE_ONE");
+
+/// `VICTORY_LIST_REAPER` (`crate::list_reaper`): each landing decides on
+/// its own where its lists are reset; lists handed to the thread under one
+/// arm are reset there under the other.
+pub(crate) static LIST_REAPER: Toggle = Toggle::flag("VICTORY_LIST_REAPER");
+
 /// `VICTORY_MAPPED_BATCH` (`crate::texture`).
 pub(crate) static MAPPED_BATCH: Toggle = Toggle::flag("VICTORY_MAPPED_BATCH");
 
@@ -69,7 +86,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 13] = [
+pub static TABLE: [Entry; 16] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -139,6 +156,21 @@ pub static TABLE: [Entry; 13] = [
         part: "copias",
         inert: &[],
     },
+    Entry {
+        toggle: &WIDE_THREADS,
+        part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &WIDE_WAKE_ONE,
+        part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &LIST_REAPER,
+        part: "preparo",
+        inert: &[],
+    },
 ];
 
 /// Checks `SPARK_AB`/`SPARK_PLAN` against the table, before the title
@@ -185,6 +217,25 @@ fn merge_mask(value: Option<&str>) -> u64 {
     }
 }
 
+/// `VICTORY_WIDE_THREADS`: the helper threads of work spread over threads
+/// on this PC ([`helpers_for`] its logical processors).
+fn wide_threads(value: Option<&str>) -> u64 {
+    let cores = std::thread::available_parallelism().ok().map(|n| n.get());
+    helpers_for(cores, value.and_then(|v| v.trim().parse().ok())) as u64
+}
+
+/// How many helper threads work for `crate::shadow`'s spread work on a PC
+/// of `cores` logical processors (`None`: not known): `asked` if given and
+/// not 0, kept in 1 to all of them but two (the submitting thread and the
+/// title's own need theirs; 14 if not known); else a quarter of them, 2 to
+/// 6 (4 if not known), as without the variable.
+pub(crate) fn helpers_for(cores: Option<usize>, asked: Option<usize>) -> usize {
+    match asked {
+        Some(n) if n > 0 => n.clamp(1, cores.map_or(14, |c| c.saturating_sub(2)).max(1)),
+        _ => cores.map_or(4, |c| c / 4).clamp(2, 6),
+    }
+}
+
 /// `VICTORY_TEXTURE_ROOM_PERCENT`: 90 unless a number, kept in 50 to 97.
 fn texture_room_percent(value: Option<&str>) -> u64 {
     value
@@ -210,6 +261,24 @@ mod tests {
         assert_eq!(texture_room_percent(Some("94")), 94);
         assert_eq!(texture_room_percent(Some("10")), 50);
         assert_eq!(texture_room_percent(Some("100")), 97);
+    }
+
+    /// Without the variable, a quarter of the logical processors, 2 to 6;
+    /// with it, as asked, up to all of them but two.
+    #[test]
+    fn helpers_are_a_quarter_of_the_processors_or_as_asked() {
+        assert_eq!(helpers_for(Some(16), None), 4);
+        assert_eq!(helpers_for(Some(12), None), 3);
+        assert_eq!(helpers_for(Some(4), None), 2);
+        assert_eq!(helpers_for(Some(64), None), 6);
+        assert_eq!(helpers_for(None, None), 4);
+        assert_eq!(helpers_for(Some(16), Some(0)), 4);
+        assert_eq!(helpers_for(Some(16), Some(8)), 8);
+        assert_eq!(helpers_for(Some(16), Some(1)), 1);
+        assert_eq!(helpers_for(Some(16), Some(99)), 14);
+        assert_eq!(helpers_for(Some(2), Some(5)), 1);
+        assert_eq!(helpers_for(None, Some(99)), 14);
+        assert_eq!(wide_threads(Some("x")), wide_threads(None));
     }
 
     #[test]

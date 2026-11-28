@@ -113,6 +113,7 @@ impl Meter {
         crate::shadow::exact_line(frames);
         crate::descriptor::sync_line(frames);
         late_line(frames);
+        crate::list_reaper::line(frames);
         card_clock_line(frames, ms);
         crate::queue2::line(frames);
         crate::plaincopy::line(frames);
@@ -132,6 +133,7 @@ impl Meter {
             }
         }
         crate::shadow::back_line(frames);
+        crate::shadow::wide_line(frames);
         {
             let [passes, pieces, compares] =
                 [0, 1, 2].map(|i| CARD_PASSES[i].swap(0, Ordering::Relaxed) as f64 / frames);
