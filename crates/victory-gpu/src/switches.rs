@@ -42,6 +42,10 @@ pub(crate) static WIDE_REFRESH: Toggle = Toggle::flag("VICTORY_WIDE_REFRESH");
 /// give the arms `0`, the default, and `1`).
 pub(crate) static WIDE_THREADS: Toggle = Toggle::new("VICTORY_WIDE_THREADS", wide_threads);
 
+/// `VICTORY_WIDE_WAKE_ONE` (`crate::shadow`): each call of the spread work
+/// decides on its own how many kept threads it wakes.
+pub(crate) static WIDE_WAKE_ONE: Toggle = Toggle::flag("VICTORY_WIDE_WAKE_ONE");
+
 /// `VICTORY_MAPPED_BATCH` (`crate::texture`).
 pub(crate) static MAPPED_BATCH: Toggle = Toggle::flag("VICTORY_MAPPED_BATCH");
 
@@ -77,7 +81,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 14] = [
+pub static TABLE: [Entry; 15] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -149,6 +153,11 @@ pub static TABLE: [Entry; 14] = [
     },
     Entry {
         toggle: &WIDE_THREADS,
+        part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &WIDE_WAKE_ONE,
         part: "copias",
         inert: &[],
     },
