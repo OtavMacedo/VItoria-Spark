@@ -1304,6 +1304,47 @@ pub(crate) extern "system" fn create_uav(
     record(handle, view);
 }
 
+/// Whether views of placed memory leave out the words the title may leave
+/// unwritten (`VICTORY_PLACED_VIEW_PADDING=1`; off by default; read once).
+///
+/// A placed view is a shape (its descriptions without the address) and an
+/// address, and the shapes are bounded (`SHAPES`, 2^22) on the assumption
+/// that a title has few kinds of textures and buffers. The title passes
+/// the 56-byte resource description with words 1 and 13 (padding before
+/// the 64-bit alignment and after the flags) unwritten, so the same view
+/// can come in with other bytes there and each time be a new shape. Once
+/// the shapes are full every placed view is a table entry kept for the
+/// run: in another fork of the family, 34.9 million entries, 16.7 GB after
+/// 70 minutes. With the switch only the named fields are kept; the
+/// padding is zero.
+fn placed_padding() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PLACED_VIEW_PADDING").is_some_and(|v| v == "1"))
+}
+
+/// The resource description of a placed view; with `clean`, only its
+/// fields (word 0, the dimension, and words 2 to 12, the alignment to the
+/// flags: `crate::resource::ResourceDesc`), the padding zero.
+fn placed_resource_words(desc: *const [u32; 14], clean: bool) -> Option<[u32; 14]> {
+    let mut words = words(desc)?;
+    if clean {
+        (words[1], words[13]) = (0, 0);
+    }
+    Some(words)
+}
+
+/// The view that device methods 0x230 and 0x238 describe
+/// ([`placed_padding`] says `clean`).
+fn placed_view(
+    unordered: bool,
+    resource: *const [u32; 14],
+    desc: *const [u32; 16],
+    clean: bool,
+) -> Option<View> {
+    let resource = placed_resource_words(resource, clean)?;
+    Some(View::Placed(unordered, resource, words(desc)?))
+}
+
 /// Device methods 0x230 and 0x238: shader resource and unordered access
 /// views of memory the title placed itself, `(resource desc, view desc,
 /// handle)`.
@@ -1313,8 +1354,8 @@ pub(crate) extern "system" fn create_placed_srv(
     desc: *const [u32; 16],
     handle: u64,
 ) {
-    if let (Some(resource), Some(desc)) = (words(resource), words(desc)) {
-        record(handle, View::Placed(false, resource, desc));
+    if let Some(view) = placed_view(false, resource, desc, placed_padding()) {
+        record(handle, view);
     }
 }
 
@@ -1324,8 +1365,8 @@ pub(crate) extern "system" fn create_placed_uav(
     desc: *const [u32; 16],
     handle: u64,
 ) {
-    if let (Some(resource), Some(desc)) = (words(resource), words(desc)) {
-        record(handle, View::Placed(true, resource, desc));
+    if let Some(view) = placed_view(true, resource, desc, placed_padding()) {
+        record(handle, view);
     }
 }
 
@@ -1519,6 +1560,33 @@ static FUNCTIONS: Table<24> = {
 mod tests {
     use super::*;
     use crate::object::{S_OK, slot};
+
+    /// With the padding left out, two placed views alike but for words 1
+    /// and 13 of the resource description are one view and one record; a
+    /// named field still tells them apart. Without it they differ.
+    #[test]
+    fn placed_views_share_shapes_across_description_padding() {
+        let view_desc = [0u32; 16];
+        let mut resource = [3, 0, 0, 0, 8, 0, 8, 0x10001, 28, 1, 0, 0, 0, 0];
+        let expected = resource;
+        for unordered in [false, true] {
+            let first = placed_view(unordered, &expected, &view_desc, true);
+            assert_eq!(first, Some(View::Placed(unordered, expected, view_desc)));
+            resource[1] = 0xaaaa_aaaa;
+            resource[13] = 0xbbbb_bbbb;
+            assert_eq!(placed_view(unordered, &resource, &view_desc, true), first);
+            assert_eq!(
+                words_for(first.clone().unwrap()),
+                words_for(placed_view(unordered, &resource, &view_desc, true).unwrap()),
+                "one record"
+            );
+            assert_ne!(placed_view(unordered, &resource, &view_desc, false), first);
+            let mut other = resource;
+            other[12] = 4;
+            assert_ne!(placed_view(unordered, &other, &view_desc, true), first);
+        }
+        assert_eq!(placed_view(false, std::ptr::null(), &view_desc, true), None);
+    }
 
     /// What newer titles pass; tests use it throughout, so that reading the
     /// placement stays inside the value.
