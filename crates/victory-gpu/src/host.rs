@@ -4122,6 +4122,7 @@ fn late_helper() {
         return;
     };
     crate::framelog::keep_on_fast_cores("victory-late-wait");
+    crate::framelog::raise_helper("victory-late-wait");
     // SAFETY: a plain event of our own.
     let Ok(event) = (unsafe { CreateEventW(None, false, false, None) }) else {
         tracing::warn!("no event for the thread that settles submissions sent ahead");
@@ -4243,6 +4244,7 @@ fn relay_worker() {
         return;
     };
     crate::framelog::keep_on_fast_cores("victory-relay");
+    crate::framelog::raise_helper("victory-relay");
     // SAFETY: a plain event of our own.
     let Ok(event) = (unsafe { CreateEventW(None, false, false, None) }) else {
         fail(format_args!(
