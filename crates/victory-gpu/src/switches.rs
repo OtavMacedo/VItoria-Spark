@@ -50,6 +50,10 @@ pub(crate) static ASYNC_PRESENT: Toggle = Toggle::flag("VICTORY_ASYNC_PRESENT");
 /// decides on its own; the protections it leaves are the same either way.
 pub(crate) static UNGUARD_RUNS: Toggle = Toggle::flag("VICTORY_UNGUARD_RUNS");
 
+/// `VICTORY_READ_BACK_POOL` (`crate::host`): a buffer made under the other
+/// arm is let go, not kept.
+pub(crate) static READ_BACK_POOL: Toggle = Toggle::flag("VICTORY_READ_BACK_POOL");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -73,7 +77,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 14] = [
+pub static TABLE: [Entry; 15] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -146,6 +150,11 @@ pub static TABLE: [Entry; 14] = [
     Entry {
         toggle: &UNGUARD_RUNS,
         part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &READ_BACK_POOL,
+        part: "preparo",
         inert: &[],
     },
 ];
