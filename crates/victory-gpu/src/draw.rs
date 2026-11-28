@@ -2612,6 +2612,9 @@ impl State {
             .or_insert_with(|| Marked::new(false));
         let changed = host.buffer_changes();
         let record = |index: u32| heap.handle(index).map(crate::descriptor::record_at);
+        // `VICTORY_HEAP_SCAN_ALT`: the compare of every kept record every
+        // few passes where the descriptor pass sees copied records.
+        ranges.scan_every(crate::heap_pass::scan_every(heap.copies_seen()));
         let slots = ranges.plan(
             changed,
             || host.buffer_slots(),
@@ -2680,6 +2683,7 @@ impl State {
             ranges.keep(index, key, &shadow, address, address + len, record, entry);
         }
         let views = ranges.views() as u32;
+        let scanned = ranges.scanned();
         // Per host copy, the span its picked views cover.
         let spans = ranges.spans();
         drop(kept);
@@ -2721,16 +2725,19 @@ impl State {
         HEAP_BUFFER_PASSES.fetch_add(1, Ordering::Relaxed);
         HEAP_BUFFER_MICROS.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         // Every 256 passes: how many of the slots looked at held the record
-        // of their last look (what a further cut could leave alone).
-        static SEEN: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+        // of their last look (what a further cut could leave alone), and
+        // how many passes compared every kept record (`VICTORY_HEAP_SCAN_ALT`).
+        static SEEN: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
         SEEN[1].fetch_add(slots.len() as u64, Ordering::Relaxed);
         SEEN[2].fetch_add(same, Ordering::Relaxed);
+        SEEN[3].fetch_add(u64::from(scanned), Ordering::Relaxed);
         if SEEN[0].fetch_add(1, Ordering::Relaxed) % 256 == 255 {
             tracing::info!(
-                "the marked pass over the heap's buffer views (VICTORY_HEAP_PASS_MARKED), its last 256 passes: {} slots looked at, {} of them held the record seen at their last look; {} views kept now",
+                "the marked pass over the heap's buffer views (VICTORY_HEAP_PASS_MARKED), its last 256 passes: {} slots looked at, {} of them held the record seen at their last look; {} views kept now; {} passes compared every kept record (VICTORY_HEAP_SCAN_ALT)",
                 SEEN[1].swap(0, Ordering::Relaxed),
                 SEEN[2].swap(0, Ordering::Relaxed),
                 views,
+                SEEN[3].swap(0, Ordering::Relaxed),
             );
         }
         static LOGGED: AtomicU64 = AtomicU64::new(0);

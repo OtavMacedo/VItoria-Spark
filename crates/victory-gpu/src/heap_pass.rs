@@ -20,6 +20,11 @@
 //! From fork pull request #523, as darkworldhm's snapshot carries it. Here
 //! the pass is taken only with `VICTORY_HEAP_PASS_MARKED` ([`marked`]);
 //! unset, `draw::State::heap_buffers` runs as it always did.
+//!
+//! With `VICTORY_HEAP_SCAN_ALT` ([`scan_alt_every`]) the compare of every
+//! kept slot's record (the third rule) runs only every few passes; see
+//! [`scan_every`] for why that loses no write and when it still runs every
+//! pass.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -98,6 +103,75 @@ pub(crate) fn marked() -> bool {
     }
 }
 
+/// Passes between two compares of every kept slot's record with
+/// `VICTORY_HEAP_SCAN_ALT=1`, and the most any value asks for.
+pub(crate) const SCAN_ALT_MOST: u64 = 16;
+
+/// What `VICTORY_HEAP_SCAN_ALT` says: the passes between two compares of
+/// every kept slot's record in title memory with the one seen at its last
+/// look (records copied past the API). Unset, `0` or not a number: 1, every
+/// pass, as without the switch. `1`: every 16 passes, the value of the pull
+/// request this comes from, so that `SPARK_AB=VICTORY_HEAP_SCAN_ALT`
+/// measures it against every pass. `2` to `16`: every that many passes;
+/// more is taken as 16 (the bound [`scan_every`] gives for slots the heap's
+/// page watch leaves alone).
+pub(crate) fn scan_alt_every(value: Option<&str>) -> u64 {
+    match value.and_then(|v| v.trim().parse::<u64>().ok()) {
+        None | Some(0) => 1,
+        Some(1) => SCAN_ALT_MOST,
+        Some(n) => n.min(SCAN_ALT_MOST),
+    }
+}
+
+/// The passes between two compares of every kept slot's record for a heap
+/// whose changed pages the descriptor pass watches (`watched`:
+/// `VICTORY_HEAP_SYNC` not `0` and the heap's pages tracked,
+/// `descriptor::Heap::copies_seen`): what `VICTORY_HEAP_SCAN_ALT` says; 1
+/// for any other heap.
+///
+/// Why skipping the compare loses no write. It finds a slot whose record
+/// the title copied in as bytes, which no descriptor call tells of. For a
+/// watched heap the descriptor pass (`descriptor::sync_heaps`, before each
+/// submission) reads every page written since its last look, makes the
+/// host slot of each record that is not the one it saw there, and that
+/// puts the slot in the heap's set of changes, which this pass takes as a
+/// whole the next time it runs: the slot is looked at then all the same,
+/// at most one pass later than the compare would have found it. Two kinds
+/// of slots are left to the compare alone, and they wait at most the
+/// interval:
+/// - slots that draws read through tables lately, which the descriptor
+///   pass leaves to their draws unless `VICTORY_HEAP_SYNC_TABLES=1`
+///   (`HostHeap::mirror_copied`); a draw that reads one makes it again;
+/// - a record copied after the descriptor pass of this submission read its
+///   page (or while it runs beside, `VICTORY_SYNC_BESIDE`), found by the
+///   next one.
+///
+/// The interval is kept to 16 ([`SCAN_ALT_MOST`]): the pass without
+/// `VICTORY_HEAP_PASS_MARKED` looks at every slot every 16 passes, and so
+/// finds such a record 15 passes late at worst; with this switch no slot
+/// waits longer than that. Every slot is also looked at every
+/// [`FULL_EVERY`] passes, as before. Where no page watch stands in for the
+/// compare (`VICTORY_HEAP_SYNC=0`, a heap the title did not place in its
+/// memory, or one whose pages could not be tracked), it runs every pass.
+pub(crate) fn scan_every(watched: bool) -> u64 {
+    let every = crate::switches::HEAP_SCAN_ALT.get().max(1);
+    if crate::switches::HEAP_SCAN_ALT.alternates() {
+        use std::sync::atomic::Ordering::Relaxed;
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if LAST.swap(every, Relaxed) != every {
+            tracing::info!(
+                "the pass over the heap's buffer views compares every kept slot's record (VICTORY_HEAP_SCAN_ALT in turn): {}",
+                if every > 1 {
+                    format!("every {every} passes")
+                } else {
+                    "every pass, as usual".to_owned()
+                }
+            );
+        }
+    }
+    if watched { every } else { 1 }
+}
+
 /// A slot's record in title memory: the tag and two words
 /// (`descriptor::record_at`).
 pub(crate) type Record = [u32; 3];
@@ -138,6 +212,12 @@ pub(crate) struct Picked<C> {
     forgotten: Option<Vec<u32>>,
     /// The old pass's rules, kept for the tests.
     full: bool,
+    /// Passes between two compares of every kept slot's record
+    /// ([`Picked::scan_every`]; 1: every pass).
+    scan_every: u64,
+    /// Whether the last [`Picked::plan`] compared them (or looked at every
+    /// slot).
+    scanned: bool,
 }
 
 impl<C: Clone> Picked<C> {
@@ -150,7 +230,21 @@ impl<C: Clone> Picked<C> {
             by_entry: HashMap::new(),
             forgotten: None,
             full,
+            scan_every: 1,
+            scanned: false,
         }
+    }
+
+    /// The passes between two compares of every kept slot's record from
+    /// the next [`Picked::plan`] on ([`scan_every`]; 0 is taken as 1).
+    pub(crate) fn scan_every(&mut self, every: u64) {
+        self.scan_every = every.max(1);
+    }
+
+    /// Whether the last [`Picked::plan`] compared every kept slot's record
+    /// (or looked at every slot).
+    pub(crate) fn scanned(&self) -> bool {
+        self.scanned
     }
 
     /// View table entries were freed (`None`: some were, which is not
@@ -179,6 +273,7 @@ impl<C: Clone> Picked<C> {
         let pass = self.passes;
         self.passes += 1;
         let forgotten = self.forgotten.replace(Vec::new());
+        self.scanned = false;
         if self.full {
             if pass.is_multiple_of(ORPHANS_EVERY) {
                 self.clear();
@@ -188,10 +283,12 @@ impl<C: Clone> Picked<C> {
         }
         let Some(forgotten) = forgotten else {
             self.clear();
+            self.scanned = true;
             return all();
         };
         if pass.is_multiple_of(FULL_EVERY) {
             self.clear();
+            self.scanned = true;
             return all();
         }
         let mut due = changed;
@@ -205,17 +302,21 @@ impl<C: Clone> Picked<C> {
                 );
             }
         }
-        due.extend(
-            self.slots
-                .iter()
-                .filter(|&(&slot, kept)| record(slot) != Some(kept.record))
-                .map(|(&slot, _)| slot),
-        );
+        let scan = pass.is_multiple_of(self.scan_every);
+        self.scanned = scan;
+        if scan {
+            due.extend(
+                self.slots
+                    .iter()
+                    .filter(|&(&slot, kept)| record(slot) != Some(kept.record))
+                    .map(|(&slot, _)| slot),
+            );
+        }
         let orphans_too = pass.is_multiple_of(ORPHANS_EVERY);
         due.extend(
             self.orphans
                 .iter()
-                .filter(|&(&slot, &seen)| orphans_too || record(slot) != Some(seen))
+                .filter(|&(&slot, &seen)| orphans_too || (scan && record(slot) != Some(seen)))
                 .map(|(&slot, _)| slot),
         );
         due.sort_unstable();
@@ -462,6 +563,75 @@ mod tests {
             p.keep(s, 0, &0, 0, 16, heap.record(s).unwrap(), None);
         }
         p.orphan(3, heap.record(3).unwrap(), None);
+        for n in 1..FULL_EVERY {
+            let due = p.plan(vec![], || vec![0, 1, 2, 3], |s| heap.record(s), entry);
+            let want: Vec<u32> = if n.is_multiple_of(ORPHANS_EVERY) {
+                vec![3]
+            } else {
+                vec![]
+            };
+            assert_eq!(due, want, "pass {n}");
+        }
+        let due = p.plan(vec![], || vec![0, 1, 2, 3], |s| heap.record(s), entry);
+        assert_eq!(due, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn the_scan_switch_reads_as_documented() {
+        assert_eq!(scan_alt_every(None), 1);
+        assert_eq!(scan_alt_every(Some("0")), 1);
+        assert_eq!(scan_alt_every(Some("x")), 1);
+        assert_eq!(scan_alt_every(Some("1")), SCAN_ALT_MOST);
+        assert_eq!(scan_alt_every(Some(" 4 ")), 4);
+        assert_eq!(scan_alt_every(Some("16")), 16);
+        assert_eq!(scan_alt_every(Some("1000")), SCAN_ALT_MOST);
+    }
+
+    /// With the compare every 16 passes: a record copied past the API is
+    /// found at the next pass that compares (15 passes late at worst); one
+    /// the heap's set of changes names (what the descriptor pass puts there
+    /// for a watched heap) at once; the orphans and the whole look keep
+    /// their own rhythm.
+    #[test]
+    fn a_spaced_scan_finds_copied_records_at_its_passes_and_changes_at_once() {
+        let mut heap = heap(8);
+        let mut p = Picked::new(false);
+        p.scan_every(16);
+        assert_eq!(pass(&mut p, &heap, vec![], vec![]).len(), 8);
+        assert!(p.scanned());
+        // Pass 1: a record copied past the API, not told of.
+        heap.records.insert(3, [1, 333, 1]);
+        for n in 1..16 {
+            assert!(pass(&mut p, &heap, vec![], vec![]).is_empty(), "pass {n}");
+            assert!(!p.scanned());
+        }
+        // Pass 16 compares and finds it.
+        assert_eq!(pass(&mut p, &heap, vec![], vec![]), vec![3]);
+        assert!(p.scanned());
+        // The same kind of copy, told of through the set of changes.
+        heap.records.insert(6, [1, 666, 1]);
+        assert_eq!(pass(&mut p, &heap, vec![6], vec![]), vec![6]);
+        // A freed table entry is looked at at once too.
+        assert_eq!(pass(&mut p, &heap, vec![], vec![102]), vec![2]);
+        // Back to every pass: the next pass compares again.
+        heap.records.insert(1, [1, 111, 1]);
+        p.scan_every(1);
+        assert_eq!(pass(&mut p, &heap, vec![], vec![]), vec![1]);
+    }
+
+    #[test]
+    fn a_spaced_scan_keeps_the_orphans_and_the_whole_look() {
+        let mut heap = heap(4);
+        let mut p: Picked<u32> = Picked::new(false);
+        p.scan_every(16);
+        let _ = p.plan(vec![], || vec![0, 1, 2, 3], |s| heap.record(s), entry);
+        for s in 0..3 {
+            p.keep(s, 0, &0, 0, 16, heap.record(s).unwrap(), None);
+        }
+        p.orphan(3, heap.record(3).unwrap(), None);
+        // The orphan's record changes at pass 1: it waits for pass 16,
+        // when orphans are tried again anyway.
+        heap.records.insert(3, [1, 303, 1]);
         for n in 1..FULL_EVERY {
             let due = p.plan(vec![], || vec![0, 1, 2, 3], |s| heap.record(s), entry);
             let want: Vec<u32> = if n.is_multiple_of(ORPHANS_EVERY) {

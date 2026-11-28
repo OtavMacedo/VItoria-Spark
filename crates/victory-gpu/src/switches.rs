@@ -64,6 +64,12 @@ pub(crate) static MAPPED_BATCH: Toggle = Toggle::flag("VICTORY_MAPPED_BATCH");
 /// `VICTORY_HEAP_PASS_MARKED` (`crate::heap_pass`; each change of arm starts the pass anew).
 pub(crate) static HEAP_PASS_MARKED: Toggle = Toggle::flag("VICTORY_HEAP_PASS_MARKED");
 
+/// `VICTORY_HEAP_SCAN_ALT` (`crate::heap_pass::scan_every`): passes
+/// between two compares of every kept record, 1 (every pass) unless set.
+/// Each pass reads it; nothing is kept that depends on it.
+pub(crate) static HEAP_SCAN_ALT: Toggle =
+    Toggle::new("VICTORY_HEAP_SCAN_ALT", crate::heap_pass::scan_alt_every);
+
 /// `VICTORY_HEAP_LOCKS` (`crate::descriptor::host`).
 pub(crate) static HEAP_LOCKS: Toggle = Toggle::flag("VICTORY_HEAP_LOCKS");
 
@@ -121,8 +127,14 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
         .is_some_and(|bits| bits & 2 != 0)
 }
 
+/// `VICTORY_HEAP_PASS_MARKED` unset or not `1` nor `alt`: the pass over the
+/// heap's buffer views is the one without marks.
+fn unmarked(value: Option<&str>) -> bool {
+    !value.is_some_and(|v| matches!(v.trim(), "1" | "alt"))
+}
+
 /// Every switch above.
-pub static TABLE: [Entry; 24] = [
+pub static TABLE: [Entry; 25] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -142,6 +154,15 @@ pub static TABLE: [Entry; 24] = [
         toggle: &HEAP_PASS_MARKED,
         part: "preparo",
         inert: &[],
+    },
+    Entry {
+        toggle: &HEAP_SCAN_ALT,
+        part: "preparo",
+        inert: &[(
+            "VICTORY_HEAP_PASS_MARKED",
+            unmarked,
+            "the compare it spaces out is the marked pass's; the pass without it has none",
+        )],
     },
     Entry {
         toggle: &MAPPED_BATCH,
@@ -270,6 +291,11 @@ fn check_inert(var: impl Fn(&str) -> Option<String>) -> Result<(), String> {
                 continue;
             };
             for (other, holds, why) in entry.inert {
+                // A setting that alternates in the same plan is no fixed
+                // setting: some cells have it the other way.
+                if plan.switches.iter().any(|t| t.name == *other) {
+                    continue;
+                }
                 if holds(var(other).as_deref()) {
                     return Err(format!(
                         "{} (experiment {name}) has no effect with {other}={}: {why}",
@@ -369,6 +395,8 @@ mod tests {
         ];
         assert!(TABLE.iter().all(|e| parts.contains(&e.part)));
         assert!(uploads_on_copy_queue(Some("3")) && !uploads_on_copy_queue(Some("1")));
+        assert!(unmarked(None) && unmarked(Some("0")) && unmarked(Some("2")));
+        assert!(!unmarked(Some("1")) && !unmarked(Some(" alt ")));
         assert!(!uploads_on_copy_queue(None));
         let mut names: Vec<&str> = TABLE.iter().map(|e| e.toggle.name()).collect();
         names.sort_unstable();

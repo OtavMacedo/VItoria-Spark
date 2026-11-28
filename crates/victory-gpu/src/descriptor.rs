@@ -78,6 +78,14 @@ impl Heap {
         self.desc.kind == SAMPLERS
     }
 
+    /// Whether [`sync_heaps`] finds the records the title copies into this
+    /// heap as bytes: it runs, and the heap's pages are tracked (a placed
+    /// shader-visible heap whose tracking was made).
+    #[cfg(windows)]
+    pub(crate) fn copies_seen(&self) -> bool {
+        self.written.is_some() && heap_sync_on()
+    }
+
     /// The host heap, made on first use from what the title wrote so far.
     /// Made late because a host view heap the size of the title's
     /// costs over 100 MB of commit, which its boot needs for its page pool.
@@ -184,8 +192,7 @@ fn mirror(handle: u64) {
 #[cfg(windows)]
 pub(crate) fn sync_heaps() {
     use std::sync::atomic::Ordering::Relaxed;
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("VICTORY_HEAP_SYNC").is_none_or(|v| v != "0")) {
+    if !heap_sync_on() {
         return;
     }
     let started = std::time::Instant::now();
@@ -275,6 +282,13 @@ pub(crate) fn sync_heaps() {
     ]) {
         count.fetch_add(n, Relaxed);
     }
+}
+
+/// Whether [`sync_heaps`] runs (`VICTORY_HEAP_SYNC` is not `0`).
+#[cfg(windows)]
+fn heap_sync_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_HEAP_SYNC").is_none_or(|v| v != "0"))
 }
 
 /// Whether a submission's pass over the title's view heaps ([`sync_heaps`])
