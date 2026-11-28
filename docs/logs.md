@@ -157,7 +157,7 @@ opção dos dois jeitos, em blocos alternados da mesma cena:
   braço continua assim no outro), `VICTORY_WC_NO_BACK` (idem; o piso
   `VICTORY_WC_NO_BACK_MIN_KB` vale nos dois braços), `VICTORY_STEP_INDEX`,
   `VICTORY_TEXTURE_ROOM_PERCENT`, `VICTORY_WIDE_MERGE`, `VICTORY_WIDE_REFRESH`, `VICTORY_WIDE_THREADS`
-  (com dois números: `SPARK_AB=VICTORY_WIDE_THREADS=4/8`), `VICTORY_WIDE_WAKE_ONE`, `VICTORY_LIST_REAPER`, `VICTORY_NOTHING_NEW_FAST` e `VICTORY_LAND_WIDE` (o pouso do que os shaders escreveram nas cópias da placa em várias threads; a memória do título fica igual nos dois braços). Outra chave em
+  (com dois números: `SPARK_AB=VICTORY_WIDE_THREADS=4/8`), `VICTORY_WIDE_WAKE_ONE`, `VICTORY_LIST_REAPER`, `VICTORY_NOTHING_NEW_FAST`, `VICTORY_FAULT_UNLOCKED` e `VICTORY_LAND_WIDE` (o pouso do que os shaders escreveram nas cópias da placa em várias threads; a memória do título fica igual nos dois braços). Outra chave em
   `SPARK_AB` recusa a execução na hora, com a lista das que podem; e também uma chave que ficaria sem efeito pela
   configuração (ex.: `VICTORY_MERGE_MASK` com o bit 2 de `VICTORY_QUEUE2`), pois a execução não mediria nada.
 - As capturas (`VICTORY_CAPTURE`) levam o braço no nome (`frame-N-a.png`, `frame-N-b.png`), para comparar a
