@@ -46,6 +46,10 @@ pub(crate) static HEAP_LOCKS: Toggle = Toggle::flag("VICTORY_HEAP_LOCKS");
 /// `VICTORY_ASYNC_PRESENT` (`crate::queue`).
 pub(crate) static ASYNC_PRESENT: Toggle = Toggle::flag("VICTORY_ASYNC_PRESENT");
 
+/// `VICTORY_UNDER_WIDE` (`crate::shadow`): each range of the merge under
+/// flights' writes decides on its own; the bytes put in are the same.
+pub(crate) static UNDER_WIDE: Toggle = Toggle::flag("VICTORY_UNDER_WIDE");
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -69,7 +73,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 13] = [
+pub static TABLE: [Entry; 14] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -137,6 +141,11 @@ pub static TABLE: [Entry; 13] = [
     Entry {
         toggle: &WIDE_REFRESH,
         part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &UNDER_WIDE,
+        part: "preparo",
         inert: &[],
     },
 ];
