@@ -623,6 +623,10 @@ pub(crate) struct State {
     /// command before this one on the list.
     #[cfg(feature = "diagnostics")]
     last_indirect: (u64, u64),
+    /// The tables the last bind made afresh for a program the
+    /// indirect-light estimate follows (`crate::ambient`): root parameter,
+    /// bytes into the view heap.
+    ambient_tables: Vec<(u8, u32)>,
     /// What the host list has: pipeline, root signature, heaps.
     host_pipeline: usize,
     /// Graphics, compute.
@@ -1272,6 +1276,9 @@ macro_rules! once {
         ONCE.call_once(|| tracing::warn!($($arg)*));
     }};
 }
+
+// After `once!`, which the module uses.
+mod ambient;
 
 /// Whether the stages of one draw share a table they both need made afresh
 /// (`VICTORY_TABLE_STAGES=1`; off by default: each stage makes its own, as
@@ -1928,6 +1935,10 @@ impl State {
                     p.name
                 ));
                 return false;
+            }
+            if stage.shader.ambient.is_some() {
+                self.ambient_tables.clear();
+                self.ambient_tables.extend(made.iter().copied());
             }
             // What the shader stores through root views and raw addresses is
             // copied back into title memory afterwards.
@@ -3748,6 +3759,20 @@ impl State {
         // SAFETY: an open list with everything set.
         unsafe { list.list.Dispatch(gx, gy, gz) };
         DISPATCHED.fetch_add(1, Ordering::Relaxed);
+        self.ambient_after(list, p);
+    }
+
+    /// The indirect-light estimate after a dispatch of `p`, if it follows
+    /// that program (`crate::ambient`); the next bind sets the title's
+    /// pipeline and root signature again.
+    fn ambient_after(&mut self, list: &HostList, p: &HostPipeline) {
+        if let Some(role) = p.stages.first().and_then(|s| s.shader.ambient)
+            && crate::ambient::on()
+            && self.ambient(list, p, role)
+        {
+            self.host_pipeline = 0;
+            self.host_roots[1] = 0;
+        }
     }
 
     /// What a draw or dispatch runs, for the device-removed report
@@ -5183,6 +5208,7 @@ impl State {
             if is_spread {
                 SPREAD[1].fetch_add(1, Ordering::Relaxed);
             }
+            self.ambient_after(list, p);
         } else {
             DRAWN.fetch_add(1, Ordering::Relaxed);
         }
