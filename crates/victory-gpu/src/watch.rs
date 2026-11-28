@@ -32,6 +32,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
+mod lockstat;
+mod rest;
+
+pub(crate) use rest::{hot_frames, rest_us};
+
 /// The unit tracked and copied: 64 KiB, the console's page (the kernel's
 /// 4 KiB pages fold into it). Finer units made the checks of the world's
 /// big buffers cost more than the copies they saved.
@@ -788,7 +793,7 @@ fn failed_asking(start: usize, end: usize) {
     // SAFETY: a valid out pointer of the right size.
     let n = unsafe { VirtualQuery(start as *const _, &mut info, size_of_val(&info)) };
     let (protected, clean, absent, viewed, aliased) = {
-        let g = guards();
+        let g = guards_by(lockstat::Who::Asking);
         let b = start / BLOCK;
         (
             g.protected.contains(&b),
@@ -863,10 +868,25 @@ fn known_view(start: usize) -> bool {
     if light() && PUBLISHED.all(first, first + 1) {
         return true;
     }
-    let g = guards();
+    let g = guards_by(lockstat::Who::Asking);
     g.protected.contains(&first)
         || g.absent.contains(&first)
         || (view_known() && g.viewed.contains(&first))
+        || resting(&g, first)
+}
+
+/// Whether `block` is left open after a write fault ([`rest`]): a block we
+/// made read-only, so view memory, not remapped since (that forgets it).
+/// Known for view memory as a guarded block is; otherwise each asking of a
+/// range that begins at it would ask the kernel (and fail) and then
+/// Windows what the memory is, while before it would have found it
+/// read-only.
+fn resting(g: &Guards, block: usize) -> bool {
+    let cfg = rest::Cfg::now();
+    cfg.on()
+        && g.rests
+            .rests(block, rest::now_us(), rest::frame(), cfg)
+            .is_some()
 }
 
 fn force_view_ask() -> bool {
@@ -904,6 +924,9 @@ struct Guards {
     /// others are answered from their notes, which then grow old
     /// ([`note_life`]).
     holes: BTreeSet<usize>,
+    /// Blocks write faults opened, left open for a moment
+    /// (`VICTORY_GUARD_REST`, `VICTORY_GUARD_HOT`; [`rest`]).
+    rests: rest::Rests,
 }
 
 /// Whether a block once guarded stays known as view memory while its
@@ -961,10 +984,30 @@ static GUARDS: Mutex<Guards> = Mutex::new(Guards {
     viewed: BTreeSet::new(),
     verified: BTreeMap::new(),
     holes: BTreeSet::new(),
+    rests: rest::Rests::new(),
 });
 
-fn guards() -> std::sync::MutexGuard<'static, Guards> {
-    GUARDS.lock().unwrap_or_else(|e| e.into_inner())
+/// The guards' lock, taken by the runtime's calls ([`guards_by`]).
+fn guards() -> lockstat::Held<Guards> {
+    guards_by(lockstat::Who::Runtime)
+}
+
+/// The guards' lock, taken by `who`: diagnostics builds count how long it
+/// is waited for and held ([`lockstat`]).
+fn guards_by(who: lockstat::Who) -> lockstat::Held<Guards> {
+    lockstat::lock(&GUARDS, who)
+}
+
+/// The guards' lock per frame since the last call, for the frame-rate
+/// line: ms waited and ms held, all takers (0 without diagnostics); the
+/// diagnostics build logs them by taker.
+pub(crate) fn guards_lock_line(frames: f64) -> (f64, f64) {
+    lockstat::line(frames)
+}
+
+/// Blocks left open after a fault, per frame ([`rest`]).
+pub(crate) fn rests_line(frames: f64) {
+    rest::line(frames);
 }
 
 /// Whether the block `page` is read-only by our hand and unwritten since a
@@ -1178,7 +1221,7 @@ static PUBLISHED: Bits = Bits::new();
 /// reports written: every other clean block was left clean by an asking
 /// before it, which did this.
 fn publish(_noted: &Journal, written: &[usize], start: usize, end: usize, holes: bool) {
-    let mut g = guards();
+    let mut g = guards_by(lockstat::Who::Asking);
     let g = &mut *g;
     for &page in written {
         let block = page * PAGE / BLOCK;
@@ -1338,7 +1381,7 @@ fn look_at_holes(most: usize) {
         return;
     };
     let part: Vec<usize> = {
-        let g = guards();
+        let g = guards_by(lockstat::Who::Asking);
         if g.holes.is_empty() {
             return;
         }
@@ -1360,7 +1403,7 @@ fn look_at_holes(most: usize) {
         if !filled && placeholder(block) {
             continue;
         }
-        let mut g = guards();
+        let mut g = guards_by(lockstat::Who::Asking);
         // (Told of since the part was taken: forgotten already.)
         if !g.holes.contains(&block) {
             continue;
@@ -1475,7 +1518,7 @@ pub(crate) fn unchanged_known(start: usize, end: usize, base: usize, copied: &[u
     }
     // (The journal's lock is let go first: `writes_as` takes it, then the
     // guards'.)
-    let g = guards();
+    let g = guards_by(lockstat::Who::Asking);
     let blocks = last - first;
     g.protected.range(first..last).count() == blocks && g.clean.range(first..last).count() == blocks
 }
@@ -1617,17 +1660,28 @@ fn guard_at(start: usize, end: usize, now: u64, keep: u64) -> Option<Vec<usize>>
     static ASK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let known =
         !*ASK.get_or_init(|| std::env::var_os("VICTORY_GUARD_ASK").is_some_and(|v| v == "1")) && {
-            let g = guards();
+            let g = guards_by(lockstat::Who::Asking);
             let first = start / BLOCK;
             g.protected.contains(&first)
                 || g.absent.contains(&first)
                 || (view_known() && g.viewed.contains(&first))
+                || resting(&g, first)
         };
     if !known && !is_view(start, end) {
         return None;
     }
     install();
-    let mut g = guards();
+    let mut g = guards_by(lockstat::Who::Asking);
+    // Blocks a write fault has just opened are reported written and left
+    // open ([`rest`]); with both switches off none is, and what was noted
+    // goes.
+    let rests = rest::Cfg::now();
+    g.rests.drop_if_off(rests);
+    let (rest_now, rest_frame) = if rests.on() {
+        (rest::now_us(), rest::frame())
+    } else {
+        (0, 0)
+    };
     let mut written = Vec::new();
     let mut run: Option<usize> = None;
     let (first, last) = (start / BLOCK, end.div_ceil(BLOCK));
@@ -1685,6 +1739,11 @@ fn guard_at(start: usize, end: usize, now: u64, keep: u64) -> Option<Vec<usize>>
             if g.protected.contains(&block) {
                 // Written through the runtime, still read-only.
                 g.clean.insert(block);
+            } else if let Some(why) = g.rests.rests(block, rest_now, rest_frame, rests) {
+                // Reported written, and left open and not clean: the next
+                // asking reports it again ([`rest`]). The run before it is
+                // guarded below.
+                rest::left_open(why);
             } else {
                 run.get_or_insert(block);
                 continue;
@@ -2188,6 +2247,7 @@ pub fn title_memory_remapped(at: usize, len: usize) {
     crate::inplace::title_memory_freeing(at, len);
     let mut g = guards();
     let range = at / BLOCK..at.saturating_add(len).div_ceil(BLOCK);
+    g.rests.forget(range.start, range.end);
     let absent: Vec<usize> = g.absent.range(range.clone()).copied().collect();
     for block in absent {
         g.absent.remove(&block);
@@ -2257,8 +2317,14 @@ fn install() {
         // Held across both checks: another thread may have opened the block
         // since this one faulted, and a copy may have guarded it again since
         // (then it is ours again, not read-only for some other reason).
-        let mut g = guards();
+        let mut g = guards_by(lockstat::Who::Fault);
         if open(&mut g, at, at + 1) {
+            // Left open for a moment ([`rest`]).
+            let rests = rest::Cfg::now();
+            if rests.on() {
+                g.rests
+                    .opened(at / BLOCK, rest::now_us(), rest::frame(), rests);
+            }
             #[cfg(feature = "diagnostics")]
             crate::copystat::add(crate::copystat::C::GuardFaults, 1);
             crate::framelog::add(crate::framelog::T::GuardFaults, 1);
@@ -2272,8 +2338,12 @@ fn install() {
     }
     static ONCE: std::sync::Once = std::sync::Once::new();
     // The switch is read here, not first in the handler ([`open`] asks
-    // it): reading the environment allocates.
+    // it): reading the environment allocates. So are the rests' and the
+    // clock's ([`rest`]).
     light_kept();
+    crate::switches::GUARD_REST.get();
+    crate::switches::GUARD_HOT.get();
+    rest::now_us();
     // SAFETY: the handler only touches our guard state and protections.
     ONCE.call_once(|| unsafe {
         AddVectoredExceptionHandler(1, Some(on_write));
@@ -2292,6 +2362,8 @@ fn writable(at: usize) -> bool {
     n != 0 && info.State == MEM_COMMIT && info.Protect == PAGE_READWRITE
 }
 
+#[cfg(test)]
+mod rest_tests;
 #[cfg(test)]
 mod submission_tests;
 

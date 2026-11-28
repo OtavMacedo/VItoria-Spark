@@ -46,6 +46,15 @@ pub(crate) static HEAP_LOCKS: Toggle = Toggle::flag("VICTORY_HEAP_LOCKS");
 /// `VICTORY_ASYNC_PRESENT` (`crate::queue`).
 pub(crate) static ASYNC_PRESENT: Toggle = Toggle::flag("VICTORY_ASYNC_PRESENT");
 
+/// `VICTORY_GUARD_REST` (`crate::watch`'s rests): microseconds a block a
+/// write fault opened is left open, 0 off. Every asking and every fault
+/// reads it; a block resting when it goes off is open and not clean, as a
+/// block any fault opened, and is made read-only at its next asking.
+pub(crate) static GUARD_REST: Toggle = Toggle::new("VICTORY_GUARD_REST", crate::watch::rest_us);
+/// `VICTORY_GUARD_HOT` (`crate::watch`'s rests): frames a block that
+/// faults four times in a frame is left open, 0 off. As above.
+pub(crate) static GUARD_HOT: Toggle = Toggle::new("VICTORY_GUARD_HOT", crate::watch::hot_frames);
+
 /// A switch of the table: the part of the frame it changes (what the
 /// summary's frame parts show it in), and the settings that leave it
 /// without effect.
@@ -69,7 +78,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 13] = [
+pub static TABLE: [Entry; 15] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -97,6 +106,16 @@ pub static TABLE: [Entry; 13] = [
     },
     Entry {
         toggle: &COPY_PLAIN,
+        part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &GUARD_HOT,
+        part: "copias",
+        inert: &[],
+    },
+    Entry {
+        toggle: &GUARD_REST,
         part: "copias",
         inert: &[],
     },
