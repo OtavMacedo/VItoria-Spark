@@ -23,6 +23,19 @@ impl HostList {
         deferred.prelude_uploads.push(Arc::new(upload));
     }
 
+    /// [`HostList::defer_texture`] for an upload detiled on the card
+    /// (`crate::detile`): its slices are filled and detiled every time the
+    /// list is submitted, and held until the list is reset.
+    pub(crate) fn defer_gpu_texture(
+        &self,
+        staging: Arc<crate::texture::Staging>,
+        upload: Arc<crate::detile::Upload>,
+    ) {
+        self.deferred()
+            .copies
+            .push(Step::GpuTexture(staging, upload));
+    }
+
     /// After the list's submission-time steps: the textures its prelude
     /// must upload. A texture several lists hold is uploaded by the first
     /// one submitted.
