@@ -61,6 +61,10 @@ pub(crate) struct Shader {
     /// The first 8 bytes of its BLAKE3, as logged.
     pub(crate) hash: String,
     container: Vec<u8>,
+    /// Its role for the indirect-light estimate (`crate::ambient`), looked
+    /// for only in compute shaders and only when a switch asks for it.
+    #[cfg(windows)]
+    pub(crate) ambient: Option<crate::ambient::Role>,
     #[cfg(windows)]
     translated: OnceLock<Option<Translated>>,
     /// Whether its code walks the ray-tracing structures, once looked at
@@ -122,6 +126,10 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
                 stage,
                 hash: full.to_hex()[..16].to_owned(),
                 container: bytes.to_vec(),
+                #[cfg(windows)]
+                ambient: (stage == "compute" && crate::ambient::wanted())
+                    .then(|| crate::ambient::role(bytes))
+                    .flatten(),
                 #[cfg(windows)]
                 translated: OnceLock::new(),
                 #[cfg(windows)]
