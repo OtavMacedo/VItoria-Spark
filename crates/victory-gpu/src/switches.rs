@@ -120,6 +120,12 @@ pub(crate) static NOTHING_NEW_FAST: Toggle = Toggle::flag("VICTORY_NOTHING_NEW_F
 /// next use under either.
 pub(crate) static RELEASE_FREED: Toggle = Toggle::flag("VICTORY_RELEASE_FREED");
 
+/// `VICTORY_SWEEP_WALK` (`crate::resource::evict_placed_in`): each
+/// unmapping or mapping of title memory finds the placed textures there by
+/// a walk over every texture instead of by their index; the index is kept
+/// under both arms and the same copies go under either.
+pub(crate) static SWEEP_WALK: Toggle = Toggle::flag("VICTORY_SWEEP_WALK");
+
 /// `VICTORY_COMMIT_SHRINK_PCT` (`crate::commitshrink`): the percent of the
 /// commit limit past which the host's caches of the PC's memory are kept
 /// short, 0 off. Its tight state is read only with the switch on, and what
@@ -161,8 +167,14 @@ fn marked(value: Option<&str>) -> bool {
     value.is_some_and(|v| v.trim() == "1")
 }
 
+/// `VICTORY_TEXTURE_SWEEP=0`: no host copy of a texture is let go
+/// (`crate::resource::evict_placed_in` looks at nothing).
+fn no_sweep(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v == "0")
+}
+
 /// Every switch above.
-pub static TABLE: [Entry; 29] = [
+pub static TABLE: [Entry; 30] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -314,6 +326,15 @@ pub static TABLE: [Entry; 29] = [
         toggle: &RELEASE_FREED,
         part: "copias",
         inert: &[],
+    },
+    Entry {
+        toggle: &SWEEP_WALK,
+        part: "copias",
+        inert: &[(
+            "VICTORY_TEXTURE_SWEEP",
+            no_sweep,
+            "with the sweep off nothing is looked for at an unmapping",
+        )],
     },
     Entry {
         toggle: &COMMIT_SHRINK_PCT,

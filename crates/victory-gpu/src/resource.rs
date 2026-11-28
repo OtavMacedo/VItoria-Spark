@@ -1197,6 +1197,37 @@ fn textures() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<usize
     TEXTURES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The placed textures the title fills, by the title memory they lie in
+/// (`crate::placed_at`): what [`evict_placed_in`] looks at. A texture is
+/// kept from [`mark_placed`] until it leaves the table of textures, and
+/// leaves before it is freed (`Drop for Resource`). Never held with
+/// [`TEXTURES`]; taken after [`PLACED_TEXTURES`] ([`texture_at`]) and
+/// before a texture's `made`, as [`TEXTURES`] is.
+#[cfg(windows)]
+static PLACED_AT: std::sync::Mutex<crate::placed_at::PlacedAt> =
+    std::sync::Mutex::new(crate::placed_at::PlacedAt::new());
+
+#[cfg(windows)]
+fn placed_at() -> std::sync::MutexGuard<'static, crate::placed_at::PlacedAt> {
+    PLACED_AT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Texture `this` is one the title placed in its own memory
+/// ([`PLACED_TEXTURES`]): marked so, and kept by the memory it lies in for
+/// [`evict_placed_in`] when the title fills it (its bytes, worked out once:
+/// its description and address never change).
+#[cfg(windows)]
+fn mark_placed(this: This) {
+    let r = resource(this);
+    r.host
+        .placed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    if fills(&r.desc) {
+        let size = footprint(&r.desc).map_or(0, |f| f.size);
+        placed_at().insert(this as usize, r.data() as u64, size);
+    }
+}
+
 /// A title texture held alive ([`hold`], [`alias_of`]).
 #[cfg(windows)]
 pub(crate) struct Held(This);
@@ -2037,6 +2068,13 @@ pub(crate) fn targets_census() -> [u64; 12] {
 /// it, and it stays until they let it go (the next use makes it anew from
 /// title memory, which is what the title just mapped). Nothing here waits
 /// on a fence, so no submission is held up.
+/// The textures looked at are those of [`PLACED_AT`] whose memory
+/// shares a byte with the range: those that lie there and the few that
+/// share a 64 KiB bucket with its ends. `VICTORY_SWEEP_WALK=1` walks every
+/// title texture instead, working out each placed one's bytes, as before
+/// the index (some 1.5 ms a call with a loaded world's textures); the same
+/// copies go either way, so it may alternate inside a run (`SPARK_AB`,
+/// `crate::switches::SWEEP_WALK`): the index is kept under both arms.
 /// Returns how many host copies went.
 /// `VICTORY_TEXTURE_SWEEP=0` lets nothing go.
 #[cfg(windows)]
@@ -2048,17 +2086,9 @@ pub(crate) fn evict_placed_in(base: u64, len: u64) -> u64 {
     // For the trail (`crate::host::trail`): how many went, their bytes,
     // and the first one.
     let (mut went, mut bytes, mut first) = (0u64, 0u64, None);
-    let all = textures();
-    for &at in all.iter() {
-        // SAFETY: a texture leaves the table before it is freed, under the
-        // lock held here (`Drop for Resource`).
-        let r = unsafe { &*(at as *const Resource) };
-        if !r.host.placed.load(Relaxed) || !fills(&r.desc) || crate::texture::host_wrote(at) {
-            continue;
-        }
-        let size = footprint(&r.desc).map_or(0, |f| f.size);
-        if !ranges_overlap(r.data() as u64, size, base, len) {
-            continue;
+    let mut let_go = |at: usize, r: &Resource| {
+        if crate::texture::host_wrote(at) {
+            return;
         }
         let gone = {
             let mut made = r.host.made.lock().unwrap_or_else(|e| e.into_inner());
@@ -2086,7 +2116,33 @@ pub(crate) fn evict_placed_in(base: u64, len: u64) -> u64 {
             }
             crate::host::retire(host);
         }
-    }
+    };
+    let looked = if crate::switches::SWEEP_WALK.on() {
+        let all = textures();
+        for &at in all.iter() {
+            // SAFETY: a texture leaves the table before it is freed, under
+            // the lock held here (`Drop for Resource`).
+            let r = unsafe { &*(at as *const Resource) };
+            if !r.host.placed.load(Relaxed) || !fills(&r.desc) {
+                continue;
+            }
+            let size = footprint(&r.desc).map_or(0, |f| f.size);
+            if ranges_overlap(r.data() as u64, size, base, len) {
+                let_go(at, r);
+            }
+        }
+        all.len() as u64
+    } else {
+        let index = placed_at();
+        index.each_over(base, len, |at| {
+            // SAFETY: a texture leaves the index before it is freed, under
+            // the lock held here (`Drop for Resource`).
+            let_go(at, unsafe { &*(at as *const Resource) });
+        })
+    };
+    EVICT_LOOKS[0].fetch_add(1, Relaxed);
+    EVICT_LOOKS[1].fetch_add(looked, Relaxed);
+    EVICT_LOOKS[2].fetch_max(looked, Relaxed);
     if went > 0 {
         crate::host::trail(|| {
             format!(
@@ -2097,6 +2153,30 @@ pub(crate) fn evict_placed_in(base: u64, len: u64) -> u64 {
         });
     }
     went
+}
+
+/// Since the start: calls of [`evict_placed_in`] that looked (the sweep
+/// on, a range of some bytes), the textures they looked at (entries of
+/// [`PLACED_AT`], or every title texture under `VICTORY_SWEEP_WALK=1`),
+/// and the most one call looked at.
+#[cfg(windows)]
+static EVICT_LOOKS: [std::sync::atomic::AtomicU64; 3] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
+/// For the memory line: [`EVICT_LOOKS`], then the placed textures in
+/// [`PLACED_AT`] now. `None` before the first call.
+#[cfg(all(windows, feature = "diagnostics"))]
+pub(crate) fn evict_looks() -> Option<[u64; 4]> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let calls = EVICT_LOOKS[0].load(Relaxed);
+    (calls != 0).then(|| {
+        [
+            calls,
+            EVICT_LOOKS[1].load(Relaxed),
+            EVICT_LOOKS[2].load(Relaxed),
+            placed_at().len() as u64,
+        ]
+    })
 }
 
 /// For the memory line: title textures with a host copy the host renders
@@ -2589,6 +2669,11 @@ impl Drop for Resource {
             let address = std::ptr::from_ref::<Resource>(self) as usize;
             crate::texback::released(address);
             textures().remove(&address);
+            // And out of the placed ones' index, for the same reason
+            // ([`evict_placed_in`]).
+            if self.host.placed.load(std::sync::atomic::Ordering::Relaxed) {
+                placed_at().remove(address);
+            }
             if !fills(&self.desc) {
                 let mut targets = TARGETS_AT.lock().unwrap_or_else(|e| e.into_inner());
                 let at = self.data() as u64;
@@ -2945,10 +3030,7 @@ pub(crate) fn texture_at(address: u64, desc: &[u32; 14]) -> Option<This> {
     }
     map.insert((address, *desc), out as usize);
     crate::texture::placed_in_host_written(address, desc);
-    resource(out)
-        .host
-        .placed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    mark_placed(out);
     Some(out)
 }
 
@@ -4671,5 +4753,130 @@ float4 lit() : SV_Target { return 1.0; }
         // The resource keeps the heap alive.
         assert_eq!(slot::<Release>(heap, 0x10)(heap), 1);
         assert_eq!(slot::<Release>(placed, 0x10)(placed), 0);
+    }
+
+    /// A placed texture the title fills is in the index of placed textures
+    /// from when it is marked until it is released, beside another at the
+    /// same address; one the title does not fill (a render target) is not.
+    #[cfg(windows)]
+    #[test]
+    fn placed_textures_are_indexed_until_released() {
+        let null = std::ptr::null();
+        let memory = vec![0u8; 1 << 20];
+        let at = memory.as_ptr() as u64;
+        let make = |desc: &ResourceDesc| {
+            let mut out = null;
+            assert_eq!(
+                create_at_address(null, at, desc, 0, null.cast(), &RESOURCE_IIDS[0], &mut out),
+                S_OK
+            );
+            out
+        };
+        let small = make(&texture(64, 64, 28, 1));
+        let big = make(&texture(256, 256, 28, 1));
+        let target = make(&ResourceDesc {
+            flags: 1,
+            ..texture(64, 64, 28, 1)
+        });
+        for t in [small, big, target] {
+            mark_placed(t);
+        }
+        let over = |base: u64, len: u64| {
+            let mut found = Vec::new();
+            placed_at().each_over(base, len, |t| found.push(t));
+            found.sort_unstable();
+            found
+        };
+        let mut both = vec![small as usize, big as usize];
+        both.sort_unstable();
+        assert_eq!(over(at, 1), both);
+        assert!(!placed_at().contains(target as usize));
+        // Past the small one's bytes: the big one alone.
+        let small_bytes = footprint(&texture(64, 64, 28, 1)).unwrap().size;
+        assert_eq!(over(at + small_bytes, 1), [big as usize]);
+        resource_release(small);
+        assert_eq!(over(at, 1), [big as usize]);
+        resource_release(big);
+        resource_release(target);
+        assert!(over(at, 1 << 20).is_empty());
+        drop(memory);
+    }
+
+    /// `cargo test -p victory-gpu --release --lib the_sweeps_walk_against_its_index
+    /// -- --ignored --nocapture`: 50,000 placed textures (2D, mips, the
+    /// title's usual formats and sizes) and 100,000 unmapped ranges; the
+    /// walk over every texture that works out each one's bytes from its
+    /// layout (as `evict_placed_in` did) against the index. The walk is
+    /// timed over 1,000 ranges: 100,000 would take minutes.
+    #[test]
+    #[ignore = "a measurement"]
+    fn the_sweeps_walk_against_its_index() {
+        use std::time::Instant;
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut below = move |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        let formats = [71u32, 77, 80, 83, 98, 28, 61];
+        let mut all = Vec::new();
+        let mut at = 0x1_0000_0000u64;
+        for t in 0..50_000usize {
+            let side = 64u64 << below(6);
+            let desc = texture(
+                side,
+                (side >> below(2)) as u32,
+                formats[below(7) as usize],
+                0,
+            );
+            let desc = ResourceDesc {
+                mip_levels: (64 - side.leading_zeros()) as u16,
+                ..desc
+            };
+            let size = footprint(&desc).map_or(0, |f| f.size);
+            all.push((0x10_0000 + t * 64, at, desc));
+            at += size.next_multiple_of(0x1_0000) + below(4) * 0x1_0000;
+        }
+        let started = Instant::now();
+        let mut index = crate::placed_at::PlacedAt::new();
+        for (t, start, desc) in &all {
+            index.insert(*t, *start, footprint(desc).map_or(0, |f| f.size));
+        }
+        let built = started.elapsed();
+        let ranges: Vec<(u64, u64)> = (0..100_000)
+            .map(|_| {
+                let base = (0x1_0000_0000 + below(at - 0x1_0000_0000)) & !0xffff;
+                (base, (below(16) + 1) << 16)
+            })
+            .collect();
+        let started = Instant::now();
+        let mut walk_found = 0usize;
+        for &(base, len) in &ranges[..1_000] {
+            for (_, start, desc) in &all {
+                let size = footprint(desc).map_or(0, |f| f.size);
+                walk_found += usize::from(ranges_overlap(*start, size, base, len));
+            }
+        }
+        let walked = started.elapsed();
+        let started = Instant::now();
+        let (mut found, mut first_found, mut looked) = (0usize, 0usize, 0u64);
+        for (i, &(base, len)) in ranges.iter().enumerate() {
+            looked += index.each_over(base, len, |_| found += 1);
+            if i == 999 {
+                first_found = found;
+            }
+        }
+        let indexed = started.elapsed();
+        assert_eq!(first_found, walk_found);
+        println!(
+            "50,000 placed textures (index made in {built:?}); walk: {:.1} us a range \
+             (1,000 ranges in {walked:?}); index: {:.3} us a range (100,000 ranges in \
+             {indexed:?}, {:.1} entries looked at and {:.2} textures found a range)",
+            walked.as_secs_f64() * 1e6 / 1e3,
+            indexed.as_secs_f64() * 1e6 / 1e5,
+            looked as f64 / 1e5,
+            found as f64 / 1e5,
+        );
     }
 }

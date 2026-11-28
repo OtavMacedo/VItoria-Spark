@@ -87,6 +87,8 @@ pub mod object;
 #[cfg(windows)]
 mod phases;
 pub mod pipeline;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod placed_at;
 #[cfg(windows)]
 mod plaincopy;
 #[cfg(windows)]

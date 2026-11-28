@@ -1207,6 +1207,24 @@ fn log_memory() {
             mb(c[3]),
         );
     }
+    // What letting go of placed textures' copies at unmappings looked at
+    // (`crate::resource::evict_placed_in`).
+    if let Some(e) = crate::resource::evict_looks() {
+        tracing::info!(
+            "memory, placed textures looked at for unmapped title memory: {} calls, {} textures \
+             looked at ({:.1} a call, {} at most), {} placed textures indexed{}",
+            e[0],
+            e[1],
+            e[1] as f64 / e[0] as f64,
+            e[2],
+            e[3],
+            if crate::switches::SWEEP_WALK.on() {
+                " (VICTORY_SWEEP_WALK=1: every texture walked)"
+            } else {
+                ""
+            },
+        );
+    }
     // What `crate::freed` let go, once it did anything.
     if let Some(freed) = crate::freed::counts() {
         tracing::info!(
