@@ -107,6 +107,10 @@ pub(crate) struct AllocationInfo {
 
 const _: () = assert!(size_of::<HeapProperties>() == 20);
 const _: () = assert!(size_of::<HeapDesc>() == 48);
+// `descriptor::placed_resource_words` keeps the field spans on either side
+// of the padding words 1 and 13.
+const _: () = assert!(std::mem::offset_of!(ResourceDesc, alignment) == 8);
+const _: () = assert!(std::mem::offset_of!(ResourceDesc, flags) == 48);
 const _: () = assert!(size_of::<ResourceDesc>() == 56);
 
 const BUFFER: u32 = 1;
@@ -2555,7 +2559,11 @@ fn hand_out_resource(
     #[cfg(windows)]
     if desc.dimension == BUFFER {
         let at = std::ptr::from_ref::<Resource>(&resource) as usize;
-        crate::shadow::register(at, resource.data() as u64, desc.width);
+        // D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS: without it no view of
+        // the buffer itself can be written.
+        const UNORDERED: u32 = 4;
+        let read_only = desc.flags & UNORDERED == 0;
+        crate::shadow::register(at, resource.data() as u64, desc.width, read_only);
     }
     object::hand_out(RESOURCE, resource, iid, &RESOURCE_IIDS, out)
 }

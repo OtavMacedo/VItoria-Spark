@@ -71,6 +71,8 @@ mod launch;
 pub mod list;
 #[cfg(windows)]
 mod memory;
+#[cfg(windows)]
+mod memtrim;
 pub mod object;
 #[cfg(windows)]
 mod phases;

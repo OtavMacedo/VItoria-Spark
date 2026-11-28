@@ -71,8 +71,9 @@ pub(crate) struct Shadow {
     card: Option<Card>,
     /// A window of title memory outside buffers, not a title buffer's copy.
     window: bool,
-    /// A window whose one buffer is in a GPU upload heap ([`window_upload`]):
-    /// its bytes, counted with the windows on the card.
+    /// A window whose one buffer is in a GPU upload heap ([`window_upload`]),
+    /// or a title buffer's ([`upload_copies`]): its bytes, counted with the
+    /// windows on the card or with the copies there.
     uploaded: u64,
     /// Whether what shaders write in the copy stays on the card while
     /// `VICTORY_WC_NO_BACK` is on ([`wc_no_back_applies`]): 0 not decided
@@ -83,6 +84,9 @@ pub(crate) struct Shadow {
     /// ([`Shadow::wc_stayed`]), joined: where a refresh stores the title's
     /// bytes over them it may hide what shaders wrote ([`WC_NO_BACK`]).
     wc_stayed: Mutex<Vec<(usize, usize)>>,
+    /// A title buffer's copy in a GPU upload heap that a shader was
+    /// declared to write: said once ([`upload_written`]).
+    upload_written: std::sync::atomic::AtomicBool,
     /// With `crate::inplace`: not a copy at all. `buffer` is placed in a
     /// heap opened on the title memory itself, so shaders read and write
     /// the title's own bytes and nothing is copied either way. The heap,
@@ -398,16 +402,30 @@ pub(crate) fn card_hash_bytes(size: u64) -> u64 {
 /// [`card_limits`] and below 1 GiB (the compare counts in 32 bits), and the
 /// host has what it takes (`Host::card_ready`).
 fn card_for(size: u64) -> Option<ID3D12Resource> {
-    if !cards() {
+    if !card_room(size) {
         return None;
+    }
+    let buffer = host()?.uav_buffer(size);
+    if buffer.is_none() {
+        CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
+    }
+    buffer
+}
+
+/// Whether a title buffer's copy of `size` bytes may go to the card's
+/// memory by [`card_for`]'s rules; if so its bytes are counted there from
+/// now, and the caller makes the buffer (or takes them off again).
+fn card_room(size: u64) -> bool {
+    if !cards() {
+        return false;
     }
     let (least, most) = card_limits();
     if size < least || size >= 1 << 30 {
-        return None;
+        return false;
     }
-    let host = host()?;
+    let Some(host) = host() else { return false };
     if !host.card_ready() {
-        return None;
+        return false;
     }
     // Only while the card has room: with this copy on it, a fifth of the
     // budget the system gives us must still be free. Copies are made when
@@ -441,17 +459,130 @@ fn card_for(size: u64) -> Option<ID3D12Resource> {
                 crate::frame::current()
             );
         }
-        return None;
+        return false;
     }
     if CARD_BYTES[0].fetch_add(size, Ordering::Relaxed) + size > most {
         CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
+/// Whether the copies of title buffers that shaders do not write and that
+/// would go to the card's memory ([`card_for`]) are one buffer in a GPU
+/// upload heap instead (`VICTORY_UPLOAD_COPIES=1`; off by default; read
+/// once), where the device has such heaps (`Host::gpu_upload_buffer`).
+///
+/// A copy on the card is two buffers of the same size: the card's side,
+/// which shaders see, and the CPU's side (`Card::staging`), in the PC's
+/// memory, which takes title memory and from which what changed goes up
+/// before each submission. On a PC whose physical memory runs out first,
+/// the CPU's sides are about 1 GB. A copy no shader writes needs nothing
+/// from the CPU's side but that stop on the way, as a window does
+/// ([`window_upload`]): with the card's memory mapped through a resizable
+/// BAR, title memory is copied into the card's memory where shaders read
+/// it, with no buffer in the PC's memory and no copy on the card.
+///
+/// Which copies ([`upload_copy_picks`]): only those the title made without
+/// unordered access (no view of the buffer itself can be written), never
+/// one at an address whose copy in such a heap a shader was once declared
+/// to write ([`upload_written`]), and only while the card has room by
+/// [`card_for`]'s rules (the same limits and count). Anything else, a
+/// device without GPU upload heaps or a buffer the heap turns down, takes
+/// the usual copy.
+///
+/// What it costs if a shader does write such a copy (through a view of
+/// other memory that covers it): the result is still right, but its
+/// snapshot and copy-back read write-combined memory on the CPU, slowly;
+/// a log line says so.
+fn upload_copies() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_UPLOAD_COPIES").is_some_and(|v| v == "1"))
+}
+
+/// Whether a title buffer's copy may go to a GPU upload heap
+/// ([`upload_copies`]): the switch is on, the device has such heaps, the
+/// title made the buffer without unordered access, and no copy at its
+/// address in such a heap was declared written. The card's room is asked
+/// after.
+fn upload_copy_picks(on: bool, heaps: bool, read_only: bool, written_before: bool) -> bool {
+    on && heaps && read_only && !written_before
+}
+
+/// Title buffer addresses whose copy in a GPU upload heap a shader was
+/// declared to write: their later copies are the usual ones.
+static UPLOAD_WRITTEN: Mutex<std::collections::BTreeSet<u64>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Since the start: title buffers' copies made in a GPU upload heap and
+/// their bytes; copies that could have gone there on a device without such
+/// heaps (or with a heap that turned the buffer down); such copies a
+/// shader was declared to write.
+static UPLOAD_COPIES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// Whether a copy of the title buffer at `start` in a GPU upload heap was
+/// ever declared written ([`upload_written`]).
+fn upload_written_before(start: u64) -> bool {
+    UPLOAD_WRITTEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&start)
+}
+
+/// The copy of the title buffer at `start` in a GPU upload heap was
+/// declared written by a shader ([`upload_copies`]).
+fn upload_written(start: u64, len: u64) {
+    UPLOAD_WRITTEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(start);
+    let n = UPLOAD_COPIES[3].fetch_add(1, Ordering::Relaxed) + 1;
+    if n <= 16 || n.is_power_of_two() {
+        tracing::warn!(
+            start = format_args!("{start:#x}"),
+            len,
+            so_far = n,
+            "a shader writes a title buffer's copy in a GPU upload heap (VICTORY_UPLOAD_COPIES=1): right, but its snapshot \
+             and copy-back read that memory slowly; the next copy at this address is a usual one"
+        );
+    }
+}
+
+/// A buffer in a GPU upload heap and where it is mapped, for the copy of
+/// the title buffer at `start` (`size` bytes), if [`upload_copies`] picks
+/// it. `None`: the usual copy.
+fn upload_copy_for(start: u64, size: u64, read_only: bool) -> Option<(ID3D12Resource, *mut u8)> {
+    if !upload_copies() || !read_only {
         return None;
     }
-    let buffer = host.uav_buffer(size);
-    if buffer.is_none() {
-        CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
+    let host = host()?;
+    let written = upload_written_before(start);
+    if !upload_copy_picks(true, host.gpu_upload(), read_only, written) {
+        if !written {
+            UPLOAD_COPIES[2].fetch_add(1, Ordering::Relaxed);
+        }
+        return None;
     }
-    buffer
+    if !card_room(size) {
+        return None;
+    }
+    let Some(made) = host.gpu_upload_buffer(size) else {
+        CARD_BYTES[0].fetch_sub(size, Ordering::Relaxed);
+        UPLOAD_COPIES[2].fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    let n = UPLOAD_COPIES[0].fetch_add(1, Ordering::Relaxed) + 1;
+    let bytes = UPLOAD_COPIES[1].fetch_add(size, Ordering::Relaxed) + size;
+    if n <= 4 || n.is_multiple_of(32) {
+        tracing::info!(
+            "a title buffer's copy is one buffer in a GPU upload heap, none in the PC's memory (VICTORY_UPLOAD_COPIES=1): \
+             {n} so far, {} MB; {} took the usual copy for want of such heaps; {} were declared written",
+            bytes >> 20,
+            UPLOAD_COPIES[2].load(Ordering::Relaxed),
+            UPLOAD_COPIES[3].load(Ordering::Relaxed),
+        );
+    }
+    Some(made)
 }
 
 /// The most bytes of windows outside buffers whose copies go to the card's
@@ -3697,7 +3828,11 @@ impl Drop for Shadow {
         }
         let window = self.window;
         if self.uploaded != 0 {
-            WINDOW_CARD_BYTES.fetch_sub(self.uploaded, Ordering::Relaxed);
+            if window {
+                WINDOW_CARD_BYTES.fetch_sub(self.uploaded, Ordering::Relaxed);
+            } else {
+                CARD_BYTES[0].fetch_sub(self.uploaded, Ordering::Relaxed);
+            }
         }
         if let Some(card) = &mut self.card {
             if window {
@@ -4130,6 +4265,7 @@ impl Shadow {
             uploaded: 0,
             wc_stays: AtomicU8::new(0),
             wc_stayed: Mutex::default(),
+            upload_written: std::sync::atomic::AtomicBool::new(false),
             place: None,
         }
     }
@@ -4164,6 +4300,10 @@ impl Shadow {
         // told: the card's writes are not seen by write watching.
         if self.place.is_some() {
             return;
+        }
+        if self.uploaded != 0 && !self.window && !self.upload_written.swap(true, Ordering::Relaxed)
+        {
+            upload_written(self.start, self.len);
         }
         let len = len.min(self.left(address));
         // Cut here, before the range is pending: no snapshot, hash, compare,
@@ -5920,6 +6060,9 @@ impl Shadow {
 
 struct Entry {
     end: u64,
+    /// The title made the buffer without unordered access
+    /// ([`upload_copies`]).
+    read_only: bool,
     shadow: Option<Arc<Shadow>>,
 }
 
@@ -5930,13 +6073,15 @@ fn buffers() -> std::sync::MutexGuard<'static, BTreeMap<(u64, usize), Entry>> {
     BUFFERS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A title buffer exists at `start` (`len` bytes).
-pub(crate) fn register(resource: usize, start: u64, len: u64) {
+/// A title buffer exists at `start` (`len` bytes); `read_only`: the title
+/// made it without unordered access.
+pub(crate) fn register(resource: usize, start: u64, len: u64, read_only: bool) {
     let mut map = buffers();
     map.insert(
         (start, resource),
         Entry {
             end: start + len,
+            read_only,
             shadow: None,
         },
     );
@@ -6103,7 +6248,7 @@ mod registration_tests {
         let observed = std::thread::scope(|scope| {
             scope.spawn(|| {
                 ready.wait();
-                register(resource, start, 8);
+                register(resource, start, 8, false);
             });
             ready.wait();
             // Time for a writer that counted before taking the lock to
@@ -6262,6 +6407,22 @@ fn lookup_tables(address: u64, len: u64, any: bool) -> Option<Arc<Shadow>> {
         let big = cards() && size >= card_limits().0;
         if !big && let Some(placed) = crate::inplace::place_for(key.0, len, false) {
             entry.shadow = Some(Arc::new(Shadow::placed(placed, key.0, len, false)));
+            return entry.shadow.clone();
+        }
+        // One that would go to the card and that shaders do not write, if
+        // asked for: one buffer in a GPU upload heap, nothing in the PC's
+        // memory ([`upload_copies`]).
+        if big && let Some((buffer, data)) = upload_copy_for(key.0, size, entry.read_only) {
+            crate::host::name(&buffer, || {
+                format!("title buffer {:#x}+{len:#x} in a GPU upload heap", key.0)
+            });
+            crate::census::copy_made(key.0, len);
+            placed_count(size, true);
+            // SAFETY: a live buffer.
+            let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+            let mut shadow = Shadow::new(buffer, data, gpu, key.0, len);
+            shadow.uploaded = size;
+            entry.shadow = Some(Arc::new(shadow));
             return entry.shadow.clone();
         }
         let (buffer, data) = host()?.shared_buffer(size)?;
@@ -6787,6 +6948,78 @@ mod window_tests {
 }
 
 #[cfg(test)]
+mod upload_tests {
+    use super::{CARD_BYTES, Shadow, upload_copy_picks, upload_written, upload_written_before};
+    use std::sync::atomic::Ordering;
+
+    /// A copy goes to a GPU upload heap only with the switch, on a device
+    /// that has such heaps, for a buffer made without unordered access
+    /// whose address never had such a copy written; anything else takes the
+    /// usual copy.
+    #[test]
+    fn only_read_only_buffers_never_written_go_to_an_upload_heap() {
+        assert!(upload_copy_picks(true, true, true, false));
+        for (on, heaps, read_only, written) in [
+            (false, true, true, false),
+            (true, false, true, false),
+            (true, true, false, false),
+            (true, true, true, true),
+            (true, false, false, true),
+        ] {
+            assert!(
+                !upload_copy_picks(on, heaps, read_only, written),
+                "{on} {heaps} {read_only} {written}"
+            );
+        }
+    }
+
+    /// A copy in an upload heap declared written keeps its address out of
+    /// such heaps from then on; other addresses are not touched.
+    #[test]
+    fn a_written_upload_copy_keeps_its_address_out() {
+        let (start, other) = (0x7_1234_0000u64, 0x7_1235_0000u64);
+        assert!(!upload_written_before(start));
+        upload_written(start, 4 << 20);
+        assert!(upload_written_before(start));
+        assert!(!upload_written_before(other));
+        assert!(!upload_copy_picks(
+            true,
+            true,
+            true,
+            upload_written_before(start)
+        ));
+        assert!(upload_copy_picks(
+            true,
+            true,
+            true,
+            upload_written_before(other)
+        ));
+    }
+
+    /// A title buffer's copy in an upload heap gives its bytes back to the
+    /// count of copies on the card when it goes (a window's go back to the
+    /// windows' count).
+    #[test]
+    fn an_upload_copy_gives_its_bytes_back_to_the_card_count() {
+        let Some(buffer) = super::card_merge_tests::warp_buffer() else {
+            return;
+        };
+        const SIZE: u64 = 64 << 10;
+        let mut bytes = vec![0u8; SIZE as usize];
+        let before = CARD_BYTES[0].load(Ordering::Relaxed);
+        CARD_BYTES[0].fetch_add(SIZE, Ordering::Relaxed);
+        let mut shadow = Shadow::new(buffer, bytes.as_mut_ptr(), 0, 0x7_2000_0000, SIZE);
+        shadow.uploaded = SIZE;
+        assert!(
+            !shadow.carded(),
+            "no card side: nothing to send up or compare"
+        );
+        drop(shadow);
+        assert_eq!(CARD_BYTES[0].load(Ordering::Relaxed), before);
+    }
+}
+
+#[cfg(test)]
 mod card_merge_tests {
     use super::{Card, Shadow};
     use std::sync::Mutex;
@@ -6797,7 +7030,7 @@ mod card_merge_tests {
 
     /// A plain buffer on the software adapter: what a copy's `buffer` and
     /// its card's `staging` are; the merge never touches them.
-    fn warp_buffer() -> Option<ID3D12Resource> {
+    pub(super) fn warp_buffer() -> Option<ID3D12Resource> {
         // SAFETY: plain DXGI and D3D12 creation calls on the software adapter.
         unsafe {
             let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;

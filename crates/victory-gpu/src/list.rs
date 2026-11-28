@@ -235,10 +235,11 @@ impl Detached {
     }
 }
 
-/// A host list that has run and waits to be used again, and the bytes of
-/// upload memory it keeps.
+/// A host list that has run and waits to be used again, the bytes of
+/// upload memory it keeps, and when it was put in the pool
+/// (`crate::host::now_ms`).
 #[cfg(windows)]
-struct Idle(crate::host::HostList, u64);
+struct Idle(crate::host::HostList, u64, u64);
 
 // SAFETY: D3D12 objects are free-threaded, and an idle list is touched by
 // nobody until it is taken out again.
@@ -281,15 +282,43 @@ pub(crate) fn fresh_list() -> Option<crate::host::HostList> {
     let idle = {
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
         let taken = idle.0.pop();
-        if let Some(Idle(_, bytes)) = &taken {
+        if let Some(Idle(_, bytes, _)) = &taken {
             idle.1 -= bytes;
         }
         taken
     };
     match idle {
-        Some(Idle(list, _)) => Some(list),
+        Some(Idle(list, _, _)) => Some(list),
         None => crate::host::host().and_then(|h| h.new_list().ok()),
     }
+}
+
+/// Destroys the idle lists that waited in the pool at least `limit_ms` at
+/// `now_ms` (`crate::memtrim::idle_list_ms`): with their allocators goes
+/// the memory of the most they ever recorded. The number destroyed.
+#[cfg(windows)]
+pub(crate) fn trim_idle(now_ms: u64, limit_ms: u64) -> usize {
+    let expired: Vec<Idle> = {
+        let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
+        let pooled: Vec<u64> = idle.0.iter().map(|i| i.2).collect();
+        let n = oldest_expired(&pooled, now_ms, limit_ms);
+        let gone: Vec<Idle> = idle.0.drain(..n).collect();
+        idle.1 -= gone.iter().map(|i| i.1).sum::<u64>();
+        gone
+    };
+    let n = expired.len();
+    // Dropped outside the pool's lock: what they hold goes back to other
+    // pools.
+    drop(expired);
+    n
+}
+
+/// How many of the first of `pooled_ms` (when each was pooled, oldest
+/// first: the pool takes from and gives to its end) are at least
+/// `limit_ms` old at `now_ms`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn oldest_expired(pooled_ms: &[u64], now_ms: u64, limit_ms: u64) -> usize {
+    pooled_ms.partition_point(|&at| now_ms.saturating_sub(at) >= limit_ms)
 }
 
 /// The host sides of lists whose submission has run (submissions are
@@ -324,7 +353,7 @@ pub(crate) fn recycle(lists: Vec<Detached>, ran: &[usize]) {
         let bytes = host.scratch_kept();
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
         if idle.0.len() < IDLE_MOST.0 && idle.1 + bytes <= IDLE_MOST.1 {
-            idle.0.push(Idle(host, bytes));
+            idle.0.push(Idle(host, bytes, crate::host::now_ms()));
             idle.1 += bytes;
         }
     }
@@ -2606,6 +2635,17 @@ mod tests {
             clip_to_destination(flat(71, 4, 1), 0, [0; 3], small, 0, None),
             Some(Some([0, 0, 0, 4, 4, 1]))
         );
+    }
+
+    /// Idle lists go oldest first, only those that waited the whole time.
+    #[test]
+    fn only_the_lists_idle_long_enough_go_oldest_first() {
+        let pooled = [1_000, 2_000, 9_000, 9_500];
+        assert_eq!(oldest_expired(&pooled, 30_000, 30_000), 0);
+        assert_eq!(oldest_expired(&pooled, 31_000, 30_000), 1);
+        assert_eq!(oldest_expired(&pooled, 39_000, 30_000), 3);
+        assert_eq!(oldest_expired(&pooled, 99_000, 30_000), 4);
+        assert_eq!(oldest_expired(&[], 99_000, 30_000), 0);
     }
 
     #[test]

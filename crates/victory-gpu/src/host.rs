@@ -230,6 +230,7 @@ fn sweep() {
     crate::pipeline::trim_library();
     trim_spare_backs();
     crate::pipeline::save_early_list_soon();
+    crate::memtrim::sweep(now);
     crate::shadow::let_go_idle();
     crate::texture::let_go_idle();
     crate::resource::let_go_idle();
@@ -1592,7 +1593,9 @@ mod tests;
 
 /// A host command list and its allocator, always used together.
 pub(crate) struct HostList {
-    allocator: ID3D12CommandAllocator,
+    /// Its command allocator, taken anew now and then at a reset
+    /// ([`crate::memtrim::allocator_trim_ms`]).
+    allocator: Mutex<crate::memtrim::Allocator>,
     pub(crate) list: ID3D12GraphicsCommandList,
     /// Work for submission time, in recorded order.
     deferred: Mutex<Deferred>,
@@ -1611,13 +1614,15 @@ pub(crate) struct HostList {
     twins: Mutex<std::collections::HashMap<usize, TwinUse>>,
     /// The list that runs those transitions just before this one, made
     /// when the list first has such transitions ([`lazy_prelude`]).
-    prelude: OnceLock<Option<Prelude>>,
+    prelude: OnceLock<Option<HeldPrelude>>,
     /// The pipelines the list binds, for reports of slow submissions.
     pipelines: Mutex<std::collections::BTreeSet<String>>,
     /// The work its indirect executions may still do (`indirect`): a
     /// shader-writable word, zeroed when the list is submitted, and after
-    /// it what the clamp notes about mesh records. In memory the CPU maps.
-    budget: OnceLock<Option<(ID3D12Resource, usize)>>,
+    /// it what the clamp notes about mesh records. In memory the CPU maps:
+    /// a buffer of its own or a slot of a shared one
+    /// ([`crate::memtrim::budget_pack`]).
+    budget: OnceLock<Option<crate::memtrim::Budget>>,
     /// The same words in the card's own memory ([`card_budget`]), which the
     /// clamp uses instead when there is one: zeroed in the list before its
     /// first clamp, its notes copied to `budget` when the list closes.
@@ -1659,6 +1664,14 @@ pub(crate) struct HostList {
 
 /// A list's prelude: an allocator and a closed list.
 type Prelude = (ID3D12CommandAllocator, ID3D12GraphicsCommandList);
+
+/// A prelude as a list holds it: its allocator may be taken anew.
+type HeldPrelude = (Mutex<crate::memtrim::Allocator>, ID3D12GraphicsCommandList);
+
+/// A new prelude as a list holds it.
+fn held_prelude((allocator, list): Prelude) -> HeldPrelude {
+    (Mutex::new(crate::memtrim::Allocator::new(allocator)), list)
+}
 
 /// What a list gathers for its prelude to clamp (`crate::indirect::gather`).
 #[derive(Default)]
@@ -2361,6 +2374,9 @@ fn scratch_pool() -> bool {
 struct Spare<T> {
     kept: Vec<(T, u64)>,
     bytes: u64,
+    /// The fewest bytes kept since the last [`Spare::trim`]: that much
+    /// stayed kept all the while and nobody asked for it.
+    low: u64,
 }
 
 impl<T> Spare<T> {
@@ -2368,6 +2384,7 @@ impl<T> Spare<T> {
         Spare {
             kept: Vec::new(),
             bytes: 0,
+            low: 0,
         }
     }
 
@@ -2375,7 +2392,24 @@ impl<T> Spare<T> {
     fn take(&mut self, size: u64) -> Option<T> {
         let at = self.kept.iter().rposition(|(_, s)| *s == size)?;
         self.bytes -= size;
+        self.low = self.low.min(self.bytes);
         Some(self.kept.remove(at).0)
+    }
+
+    /// Takes out the oldest things kept, up to the fewest bytes kept since
+    /// the last trim (none of those was asked for in all that time), to be
+    /// freed. The first trim only starts the window.
+    fn trim(&mut self) -> Vec<(T, u64)> {
+        let mut out = Vec::new();
+        let mut left = self.low;
+        while let Some(at) = self.kept.iter().position(|(_, s)| *s <= left) {
+            let (thing, size) = self.kept.remove(at);
+            left -= size;
+            self.bytes -= size;
+            out.push((thing, size));
+        }
+        self.low = self.bytes;
+        out
     }
 
     /// Keeps `thing` (`size` bytes) unless that takes the kept bytes past
@@ -2596,6 +2630,22 @@ fn give_chunks(chunks: Vec<(Chunk, u64)>) {
     }
     // Freed outside the lock.
     drop(freed);
+}
+
+/// Frees the spare scratch chunks no list took since the last call
+/// ([`Spare::trim`]; `crate::memtrim::sweep`, every ten seconds with
+/// `VICTORY_ALLOCATOR_TRIM=1`). The bytes freed.
+pub(crate) fn trim_spare_scratch() -> u64 {
+    let freed = SPARE.lock().unwrap_or_else(|e| e.into_inner()).trim();
+    let bytes: u64 = freed.iter().map(|(_, size)| size).sum();
+    let count = freed.len() as u64;
+    ALIVE[1].fetch_sub(count, Ordering::Relaxed);
+    ALIVE[2].fetch_sub(bytes, Ordering::Relaxed);
+    ALIVE[3].fetch_sub(count, Ordering::Relaxed);
+    ALIVE[4].fetch_sub(bytes, Ordering::Relaxed);
+    // Freed outside the lock.
+    drop(freed);
+    bytes
 }
 
 /// What the host keeps for copies in the card's own memory
@@ -5047,10 +5097,10 @@ impl Host {
             )?;
             let prelude = OnceLock::new();
             if !lazy_prelude() {
-                let _ = prelude.set(self.make_prelude());
+                let _ = prelude.set(self.make_prelude().map(held_prelude));
             }
             Ok(HostList {
-                allocator,
+                allocator: Mutex::new(crate::memtrim::Allocator::new(allocator)),
                 list,
                 deferred: Mutex::default(),
                 scratch: Mutex::default(),
@@ -8227,11 +8277,16 @@ impl HostList {
                 give_chunks(std::mem::take(&mut scratch.chunks));
             }
         }
-        // SAFETY: the list is not executing.
-        let reset = unsafe {
-            self.allocator
-                .Reset()
-                .and_then(|()| self.list.Reset(&self.allocator, None))
+        let reset = {
+            let mut allocator = self.allocator.lock().unwrap_or_else(|e| e.into_inner());
+            // The list is not executing: every submission of it finished.
+            let ready = match host() {
+                Some(host) => allocator.ready(&host.device, crate::memtrim::Owner::List),
+                // SAFETY: the list is not executing.
+                None => unsafe { allocator.get().Reset() },
+            };
+            // SAFETY: the list is not executing; the allocator is ready.
+            ready.and_then(|()| unsafe { self.list.Reset(allocator.get(), None) })
         };
         if let Err(e) = reset {
             fail(format_args!("a host command list did not reset ({e})"));
@@ -8648,15 +8703,23 @@ impl HostList {
         }
         let Some((allocator, list)) = self
             .prelude
-            .get_or_init(|| host().and_then(|h| h.make_prelude()))
+            .get_or_init(|| host().and_then(|h| h.make_prelude()).map(held_prelude))
             .as_ref()
         else {
             fail(format_args!("no host list for a state prelude"));
         };
+        let mut allocator = allocator.lock().unwrap_or_else(|e| e.into_inner());
+        // The prelude is not executing (every submission is waited for).
+        let ready = match host() {
+            Some(host) => allocator.ready(&host.device, crate::memtrim::Owner::Prelude),
+            // SAFETY: the prelude is not executing.
+            None => unsafe { allocator.get().Reset() },
+        };
+        let allocator = allocator.get();
         // SAFETY: the prelude is not executing (every submission is waited
-        // for); the textures are live.
+        // for); the allocator is ready; the textures are live.
         let recorded = unsafe {
-            allocator.Reset().and_then(|()| {
+            ready.and_then(|()| {
                 list.Reset(allocator, None)?;
                 #[cfg(feature = "diagnostics")]
                 let shot_span = if shot_begins.is_some() { crate::shot::span_begin(list) } else { u32::MAX };
@@ -9210,21 +9273,34 @@ impl HostList {
     /// The host address of the list's indirect-work budget, zeroed at each
     /// submission of the list from the first use after a reset on.
     pub(crate) fn budget(&self) -> Option<u64> {
-        let (buffer, data) = self
-            .budget
-            .get_or_init(|| {
-                let (b, d) = host()?.shared_buffer(256)?;
-                Some((b, d as usize))
-            })
-            .as_ref()?;
         let card = self
             .card_budget
             .get_or_init(|| self.make_card_budget())
             .as_ref();
+        let mapped = self
+            .budget
+            .get_or_init(|| {
+                let host = host()?;
+                // Packed only where shaders charge the card's words: the
+                // mapped ones are then only a copy's destination.
+                if card.is_some() && crate::memtrim::budget_pack() {
+                    let packed = crate::memtrim::Budget::packed(|| {
+                        let made = host.shared_buffer(64 << 10)?;
+                        name(&made.0, || "indirect budget slots".into());
+                        Some(made)
+                    });
+                    if packed.is_some() {
+                        return packed;
+                    }
+                }
+                let (b, d) = host.shared_buffer(crate::memtrim::BUDGET_SLOT_BYTES)?;
+                Some(crate::memtrim::Budget::own(b, d))
+            })
+            .as_ref()?;
         let mut deferred = self.deferred();
         if !deferred.budget_zeroed {
             deferred.budget_zeroed = true;
-            let at = *data;
+            let at = mapped.data;
             // SAFETY: the list's own mapped words, written before it runs.
             // The words after the budget hold what the clamp noted about the
             // list's last run (mesh dispatches: the largest group count
@@ -9245,7 +9321,7 @@ impl HostList {
             }
         }
         // SAFETY: a live buffer.
-        Some(unsafe { card.unwrap_or(buffer).GetGPUVirtualAddress() })
+        Some(unsafe { card.unwrap_or(&mapped.buffer).GetGPUVirtualAddress() })
     }
 
     /// The budget's words in the card's own memory ([`card_budget`]), if
@@ -9297,20 +9373,21 @@ impl HostList {
         if !self.deferred().budget_zeroed {
             return;
         }
-        let (Some(Some(card)), Some(Some((mapped, _)))) =
-            (self.card_budget.get(), self.budget.get())
+        let (Some(Some(card)), Some(Some(mapped))) = (self.card_budget.get(), self.budget.get())
         else {
             return;
         };
-        // SAFETY: an open list; both buffers are the list's own. The
-        // mapped one is promoted from common to the copy destination.
+        // SAFETY: an open list; the card's buffer and the mapped words (a
+        // buffer or a slot of a shared one) are the list's own. The mapped
+        // buffer is promoted from common to the copy destination.
         unsafe {
             self.list.ResourceBarrier(&[transition(
                 card,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE,
             )]);
-            self.list.CopyBufferRegion(mapped, 4, card, 4, 8);
+            self.list
+                .CopyBufferRegion(&mapped.buffer, mapped.offset + 4, card, 4, 8);
             self.list.ResourceBarrier(&[transition(
                 card,
                 D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -11568,7 +11645,7 @@ void main() {
             // SAFETY: inside the allocation.
             unsafe { dword(i * 4).write_volatile(0x5A00_0000 | i as u32) };
         }
-        crate::shadow::register(0x51_5151, title as u64, LEN as u64);
+        crate::shadow::register(0x51_5151, title as u64, LEN as u64, false);
         let shadow = crate::shadow::find(title as u64, LEN as u64).expect("a host copy");
         if !shadow.carded() {
             eprintln!(
@@ -11776,7 +11853,7 @@ void main() {
             // SAFETY: inside the allocation.
             unsafe { dword(i * 4).write_volatile(0x5A00_0000 | i as u32) };
         }
-        crate::shadow::register(0x52_5252, title as u64, LEN as u64);
+        crate::shadow::register(0x52_5252, title as u64, LEN as u64, false);
         let shadow = crate::shadow::find(title as u64, LEN as u64).expect("a host copy");
         if !shadow.carded() {
             eprintln!(
