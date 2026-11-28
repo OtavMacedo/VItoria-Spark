@@ -25,7 +25,7 @@ fn two_dirty_card_buffers_reach_readback_in_the_same_submission() {
     assert!(!allocation.is_null());
     let bases = [allocation as usize, allocation as usize + MIB];
     let shadows = bases.map(|base| {
-        crate::shadow::register(base, base as u64, MIB as u64);
+        crate::shadow::register(base, base as u64, MIB as u64, false);
         let copy = crate::shadow::find(base as u64, MIB as u64).unwrap();
         assert!(copy.carded(), "both title buffers must have a card copy");
         copy

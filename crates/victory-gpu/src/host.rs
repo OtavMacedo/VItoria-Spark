@@ -11299,7 +11299,7 @@ void main() {
             // SAFETY: inside the allocation.
             unsafe { dword(i * 4).write_volatile(0x5A00_0000 | i as u32) };
         }
-        crate::shadow::register(0x51_5151, title as u64, LEN as u64);
+        crate::shadow::register(0x51_5151, title as u64, LEN as u64, false);
         let shadow = crate::shadow::find(title as u64, LEN as u64).expect("a host copy");
         if !shadow.carded() {
             eprintln!(
@@ -11507,7 +11507,7 @@ void main() {
             // SAFETY: inside the allocation.
             unsafe { dword(i * 4).write_volatile(0x5A00_0000 | i as u32) };
         }
-        crate::shadow::register(0x52_5252, title as u64, LEN as u64);
+        crate::shadow::register(0x52_5252, title as u64, LEN as u64, false);
         let shadow = crate::shadow::find(title as u64, LEN as u64).expect("a host copy");
         if !shadow.carded() {
             eprintln!(
