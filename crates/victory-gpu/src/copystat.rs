@@ -1194,6 +1194,19 @@ fn log_memory() {
             given[5],
         );
     }
+    // What `crate::commitshrink` did, while it is on.
+    if let Some(c) = crate::commitshrink::counts() {
+        tracing::info!(
+            "memory, commit near its limit (VICTORY_COMMIT_SHRINK_PCT): {} % of the limit committed at \
+             the last sweep; tight {} times, {} sweeps in all; {} idle host lists destroyed, {:.0} MB \
+             of spare scratch chunks freed",
+            c[4],
+            c[1],
+            c[0],
+            c[2],
+            mb(c[3]),
+        );
+    }
     // What `crate::freed` let go, once it did anything.
     if let Some(freed) = crate::freed::counts() {
         tracing::info!(

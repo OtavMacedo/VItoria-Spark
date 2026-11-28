@@ -177,6 +177,10 @@ pub(crate) fn ram_idle_ms(avail_phys: Option<u64>) -> u64 {
     const NORMAL_MS: u64 = 10_000;
     const MODERATE_MS: u64 = 5_000;
     const HIGH_MS: u64 = 2_000;
+    // Commit near its limit (`VICTORY_COMMIT_SHRINK_PCT`): as with little RAM.
+    if crate::commitshrink::tight() {
+        return HIGH_MS;
+    }
     let Some(avail) = avail_phys else {
         return NORMAL_MS;
     };
@@ -230,6 +234,7 @@ fn sweep() {
     crate::pipeline::trim_library();
     trim_spare_backs();
     crate::pipeline::save_early_list_soon();
+    crate::commitshrink::sweep();
     crate::memtrim::sweep(now);
     crate::shadow::let_go_idle();
     crate::texture::let_go_idle();

@@ -313,6 +313,35 @@ pub(crate) fn trim_idle(now_ms: u64, limit_ms: u64) -> usize {
     n
 }
 
+/// The most host lists kept idle: [`IDLE_MOST`], or while Windows' commit
+/// is near its limit (`crate::commitshrink`) its `IDLE_LISTS_TIGHT`.
+#[cfg(windows)]
+fn idle_most(tight: bool) -> usize {
+    if tight {
+        crate::commitshrink::IDLE_LISTS_TIGHT.min(IDLE_MOST.0)
+    } else {
+        IDLE_MOST.0
+    }
+}
+
+/// Destroys the idle lists past the newest `most` (the oldest first: the
+/// pool takes from and gives to its end), for `crate::commitshrink`. The
+/// number destroyed.
+#[cfg(windows)]
+pub(crate) fn trim_idle_to(most: usize) -> usize {
+    let gone: Vec<Idle> = {
+        let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
+        let over = idle.0.len().saturating_sub(most);
+        let gone: Vec<Idle> = idle.0.drain(..over).collect();
+        idle.1 -= gone.iter().map(|i| i.1).sum::<u64>();
+        gone
+    };
+    let n = gone.len();
+    // Dropped outside the pool's lock.
+    drop(gone);
+    n
+}
+
 /// How many of the first of `pooled_ms` (when each was pooled, oldest
 /// first: the pool takes from and gives to its end) are at least
 /// `limit_ms` old at `now_ms`.
@@ -342,9 +371,8 @@ pub(crate) fn recycle(lists: Vec<Detached>, ran: &[usize]) {
         // The descriptor slots and the upload memory its commands named.
         drop(_state);
         drop(_uploads);
-        if !ran.contains(&i)
-            || IDLE.lock().unwrap_or_else(|e| e.into_inner()).0.len() >= IDLE_MOST.0
-        {
+        let most = idle_most(crate::commitshrink::tight());
+        if !ran.contains(&i) || IDLE.lock().unwrap_or_else(|e| e.into_inner()).0.len() >= most {
             continue;
         }
         // As the title's reset does: what the list kept for its commands
@@ -352,7 +380,7 @@ pub(crate) fn recycle(lists: Vec<Detached>, ran: &[usize]) {
         host.reset();
         let bytes = host.scratch_kept();
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
-        if idle.0.len() < IDLE_MOST.0 && idle.1 + bytes <= IDLE_MOST.1 {
+        if idle.0.len() < most && idle.1 + bytes <= IDLE_MOST.1 {
             idle.0.push(Idle(host, bytes, crate::host::now_ms()));
             idle.1 += bytes;
         }
@@ -2570,6 +2598,15 @@ static NEWER_LIST_FUNCTIONS: Table<160> = Table(list_table(true));
 mod tests {
     use super::*;
     use crate::object::slot;
+
+    /// While the commit is near its limit, fewer idle lists are kept.
+    #[cfg(windows)]
+    #[test]
+    fn idle_lists_are_kept_few_while_the_commit_is_tight() {
+        assert_eq!(idle_most(false), IDLE_MOST.0);
+        assert_eq!(idle_most(true), crate::commitshrink::IDLE_LISTS_TIGHT);
+        assert!(idle_most(true) < idle_most(false));
+    }
 
     /// A 2D texture's [`Shape`].
     fn flat(format: u32, side: u32, levels: u32) -> Shape {

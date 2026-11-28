@@ -41,6 +41,8 @@ mod copystat;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(windows)]
+mod commitshrink;
+#[cfg(windows)]
 mod compose;
 pub mod descriptor;
 #[cfg(windows)]
