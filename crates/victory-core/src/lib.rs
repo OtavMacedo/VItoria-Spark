@@ -6,8 +6,11 @@
 //! * [`logging`]: one tracing setup for all binaries.
 //! * [`ab`]: switches that alternate inside a run, to measure both ways.
 //! * [`session`]: the run's structured log and summary (`logs/`).
+//! * [`alloc_count`]: whether the counting allocator counts
+//!   (`VICTORY_COUNT_ALLOCS`).
 
 pub mod ab;
+pub mod alloc_count;
 pub mod config;
 pub mod logging;
 pub mod policy;
