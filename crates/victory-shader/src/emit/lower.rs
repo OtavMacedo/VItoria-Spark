@@ -20,6 +20,9 @@ use crate::native::{HwStage, NativeProgram, ResourceType, RootType, StageIo, Usa
 use crate::resource::{Address, CODE, MEMORY, Resources, Role, Site, Source};
 use crate::structure::{Atom, Bool, LaneExit, Structured};
 
+/// Colour outputs held to the console's HDR range (`VICTORY_HDR_CLAMP`).
+#[path = "hdr.rs"]
+pub(super) mod hdr;
 /// The ray-tracing node test (`image_bvh_intersect_ray`), a child module so
 /// it shares the emitter's state.
 #[path = "intersect.rs"]
@@ -11622,6 +11625,9 @@ impl<'a> Lower<'a> {
             (true, false) => ("storeVertexOutput", 171),
             (true, true) => ("storePrimitiveOutput", 172),
         };
+        // Float colour outputs of a pixel program are held to the console's HDR range
+        // (`VICTORY_HDR_CLAMP`); depth and the other stages' outputs are not.
+        let colour = self.s.pixel && matches!(e.target, Target::Color(_));
         for (id, col, value, half) in stores {
             let mut x = self.i32_of(value)?;
             if let Some(high) = half {
@@ -11640,13 +11646,12 @@ impl<'a> Lower<'a> {
             let el = &mut elements(self, primitive)[id];
             el.usage |= 1 << col;
             let (suffix, x) = match el.comp {
-                9 if half.is_some() => (".f32", self.as_float(x)),
                 9 => {
                     let f = match self.floats.get(&value) {
-                        Some(&f) => f,
-                        None => self.as_float(x),
+                        Some(&f) if half.is_none() => f,
+                        _ => self.as_float(x),
                     };
-                    (".f32", f)
+                    (".f32", if colour { self.clamp_hdr(f) } else { f })
                 }
                 _ => (".i32", x),
             };
