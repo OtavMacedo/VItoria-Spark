@@ -64,7 +64,7 @@ fn run_title(
         None => println!("build          unknown ({hash})"),
     }
     let dlss = dlss_available()?;
-    let output = apply_title_patches(&mut prepared, build, console, dlss)?;
+    apply_title_patches(&mut prepared, build, console, dlss)?;
 
     let images = cfg.cache_subdir("images")?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
@@ -104,9 +104,6 @@ fn run_title(
     victory_hle::modules::files::mount_at('G', title_dir);
     let temp = cfg.data_subdir(&format!("{:08X}/temp", title.id))?;
     victory_hle::modules::files::mount_at('T', &temp);
-    if let Some(size) = output {
-        ui_follows_output(&storage, size);
-    }
     victory_hle::runtime::set_title(victory_hle::runtime::Title { storage, ..title });
     victory_hle::console::set(match console {
         Console::SeriesX => victory_hle::console::Console::SeriesX,
@@ -566,8 +563,7 @@ fn from_hex(s: &str) -> Result<Vec<u8>> {
 /// (`0.75` or `3/4`, 0.5 to 1; default 1, the scene at the output's size).
 /// A smaller output is refused, as the title stops at startup with one: a
 /// 1920x1080 scene is `1440p` with `3/4`. Needs a known build with its
-/// output sites and the Series X profile; the title's UI follows the output
-/// through its settings file ([`ui_follows_output`]). With DLSS's FidelityFX
+/// output sites and the Series X profile. With DLSS's FidelityFX
 /// path, its mode's scale (`dlss_scale`) is the scene's instead. Returns
 /// the output, the scene and the patches.
 #[cfg(windows)]
@@ -694,81 +690,6 @@ fn legacy_ui_size(
     }
 }
 
-/// With the output patched to `size`: the UI blocks of the title's settings
-/// file (`<storage>/settings/settings.xml`, [`UI_SETTINGS_BLOCKS`]) get that
-/// size, so its UI is laid out for the output and not for 3840x2160. Only
-/// those values change; before the first change the file is copied to
-/// `settings.xml.original` beside it. A missing file (the title has not
-/// made it yet) or one in an unknown form is left alone, and what was done
-/// is printed either way; a failure is printed and the run goes on.
-///
-/// [`UI_SETTINGS_BLOCKS`]: victory_game::output::UI_SETTINGS_BLOCKS
-#[cfg(windows)]
-fn ui_follows_output(storage: &Path, size: victory_game::output::OutputSize) {
-    let file = storage.join("settings").join("settings.xml");
-    match ui_settings_follow(&file, size) {
-        Ok(line) => println!("ui settings    {line}"),
-        Err(error) => println!("ui settings    unchanged, {error:#}"),
-    }
-}
-
-/// [`ui_follows_output`] for `file`; returns what was done.
-#[cfg(any(windows, test))]
-fn ui_settings_follow(file: &Path, size: victory_game::output::OutputSize) -> Result<String> {
-    use victory_game::output::ui_settings_for;
-    const BOM: &[u8] = b"\xef\xbb\xbf";
-    let (width, height) = (size.width, size.height);
-    let bytes = match std::fs::read(file) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(format!(
-                "{} not made yet: the title makes it, and its UI follows the output from \
-                 the next start",
-                file.display()
-            ));
-        }
-        Err(error) => return Err(error).with_context(|| format!("reading {}", file.display())),
-    };
-    let (bom, body) = match bytes.strip_prefix(BOM) {
-        Some(body) => (BOM, body),
-        None => (&[][..], &bytes[..]),
-    };
-    let text =
-        std::str::from_utf8(body).with_context(|| format!("{} is not UTF-8", file.display()))?;
-    let ui = ui_settings_for(text, size);
-    let missing = if ui.missing.is_empty() {
-        String::new()
-    } else {
-        format!(" ({} not found)", ui.missing.join(", "))
-    };
-    if ui.changed.is_empty() {
-        return Ok(format!(
-            "already {width}x{height} in {}{missing}",
-            file.display()
-        ));
-    }
-    let backup = file.with_file_name("settings.xml.original");
-    if !backup.exists() {
-        std::fs::copy(file, &backup).with_context(|| format!("keeping {}", backup.display()))?;
-    }
-    // Written beside it and renamed over it: never half a file.
-    let new = file.with_file_name("settings.xml.new");
-    std::fs::write(&new, [bom, ui.text.as_bytes()].concat())
-        .with_context(|| format!("writing {}", new.display()))?;
-    std::fs::rename(&new, file).with_context(|| format!("replacing {}", file.display()))?;
-    let changes: Vec<String> = ui
-        .changed
-        .iter()
-        .map(|(block, w, h)| format!("{block} {w}x{h} -> {width}x{height}"))
-        .collect();
-    Ok(format!(
-        "{} in {} (the first file is kept as {}){missing}",
-        changes.join(", "),
-        file.display(),
-        backup.display()
-    ))
-}
-
 /// The bytes the title reserves for its two scanout buffers at `size`: two
 /// 64 KiB-aligned, tiled RGBA8 surfaces, the whole rounded up to 2 MiB as
 /// the title's allocation check expects.
@@ -794,7 +715,7 @@ fn scanout_reservation_bytes(size: victory_game::output::OutputSize) -> Result<u
 
 #[cfg(test)]
 mod output_tests {
-    use super::{scanout_reservation_bytes, ui_settings_follow};
+    use super::scanout_reservation_bytes;
     use victory_game::output::{LEGACY_CANVAS, OutputSize};
 
     /// The stock size reproduces the stock reservation (64 MiB); smaller
@@ -809,49 +730,5 @@ mod output_tests {
             assert!(u64::from(bytes) >= 2 * u64::from(size.width * size.height * 4));
             assert_eq!(bytes >> 20, mib, "{text}");
         }
-    }
-
-    /// The settings file gets the output's size in its two UI blocks, the
-    /// first file is kept beside it (once), and a BOM stays.
-    #[test]
-    fn the_settings_file_follows_the_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.xml");
-        let backup = dir.path().join("settings.xml.original");
-        let size = OutputSize::parse("1440p").unwrap();
-        let line = ui_settings_follow(&file, size).unwrap();
-        assert!(line.contains("not made yet"), "{line}");
-        assert!(!file.exists());
-
-        let stock = "\u{feff}<s><uiResolution><width value=\"0\" /><height value=\"0\" />\
-                     </uiResolution><resolutionFullscreen><width value=\"0\" />\
-                     <height value=\"0\" /></resolutionFullscreen></s>";
-        std::fs::write(&file, stock).unwrap();
-        let line = ui_settings_follow(&file, size).unwrap();
-        assert!(line.contains("uiResolution 0x0 -> 2560x1440"), "{line}");
-        assert!(
-            line.contains("resolutionFullscreen 0x0 -> 2560x1440"),
-            "{line}"
-        );
-        let written = std::fs::read_to_string(&file).unwrap();
-        let expected = stock
-            .replace("<width value=\"0\"", "<width value=\"2560\"")
-            .replace("<height value=\"0\"", "<height value=\"1440\"");
-        assert_eq!(written, expected);
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), stock);
-        assert!(!dir.path().join("settings.xml.new").exists());
-
-        // Another size later: the file changes, the first copy stays.
-        let line = ui_settings_follow(&file, LEGACY_CANVAS).unwrap();
-        assert!(
-            line.contains("uiResolution 2560x1440 -> 3840x2160"),
-            "{line}"
-        );
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), stock);
-        let line = ui_settings_follow(&file, LEGACY_CANVAS).unwrap();
-        assert!(line.starts_with("already 3840x2160"), "{line}");
-
-        std::fs::write(&file, b"\xff\xfe<").unwrap();
-        assert!(ui_settings_follow(&file, size).is_err());
     }
 }

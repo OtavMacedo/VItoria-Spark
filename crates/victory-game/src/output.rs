@@ -280,83 +280,6 @@ pub fn rip_relative_refs(code: &[u8], code_rva: u32, start: u32, len: u32) -> Ve
     found
 }
 
-/// The blocks of the title's settings file that size its UI. Left at 0x0
-/// ("as the console") the UI is laid out for 3840x2160 whatever the output,
-/// so on a smaller output every element comes out larger by the ratio of
-/// the two; set to the output's size, the UI is laid out for it.
-pub const UI_SETTINGS_BLOCKS: [&str; 2] = ["uiResolution", "resolutionFullscreen"];
-
-/// What [`ui_settings_for`] made of a settings file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UiSettings {
-    /// The file with the changes made (the input when there are none).
-    pub text: String,
-    /// The blocks changed, each with its old width and height as written.
-    pub changed: Vec<(&'static str, String, String)>,
-    /// The blocks not found in the expected form, left as they were.
-    pub missing: Vec<&'static str>,
-}
-
-/// `text`, the title's settings file, with the width and height of each of
-/// [`UI_SETTINGS_BLOCKS`] set to `size`. Only those two values change: a
-/// block is `<name>`, then `<width value="..." />` and `<height value="..."
-/// />` with only whitespace between them; any other form is left alone and
-/// reported as missing.
-pub fn ui_settings_for(text: &str, size: OutputSize) -> UiSettings {
-    let mut edits = Vec::new();
-    let mut changed = Vec::new();
-    let mut missing = Vec::new();
-    for block in UI_SETTINGS_BLOCKS {
-        let mut found = false;
-        let open = format!("<{block}>");
-        let mut from = 0;
-        while let Some(at) = text[from..].find(&open) {
-            let start = from + at + open.len();
-            from = start;
-            let Some([width, height]) = size_values(text, start) else {
-                continue;
-            };
-            found = true;
-            let old = (&text[width.clone()], &text[height.clone()]);
-            if old != (&size.width.to_string()[..], &size.height.to_string()[..]) {
-                changed.push((block, old.0.to_owned(), old.1.to_owned()));
-                edits.push((width, size.width.to_string()));
-                edits.push((height, size.height.to_string()));
-            }
-        }
-        if !found {
-            missing.push(block);
-        }
-    }
-    let mut out = text.to_owned();
-    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
-    for (range, value) in edits {
-        out.replace_range(range, &value);
-    }
-    UiSettings {
-        text: out,
-        changed,
-        missing,
-    }
-}
-
-/// The byte ranges of the width and height values of a size block whose
-/// opening tag ends at `at`.
-fn size_values(text: &str, at: usize) -> Option<[std::ops::Range<usize>; 2]> {
-    let mut at = at;
-    let mut value = |name: &str| {
-        let rest = text[at..].trim_start();
-        let open = format!("<{name} value=\"");
-        let rest = rest.strip_prefix(open.as_str())?;
-        let start = text.len() - rest.len();
-        let end = start + rest.find('"')?;
-        let tail = text[end + 1..].trim_start().strip_prefix("/>")?;
-        at = text.len() - tail.len();
-        Some(start..end)
-    };
-    Some([value("width")?, value("height")?])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,48 +383,6 @@ mod tests {
             (SITES.ui_size_load + 8).wrapping_add_signed(displacement),
             SITES.display_mode
         );
-    }
-
-    /// The two blocks get the output's size; nothing else changes.
-    #[test]
-    fn ui_settings_follow_the_output() {
-        let text = "<settings>\r\n  <uiResolution>\r\n    <width value=\"0\" />\r\n    \
-                    <height value=\"0\" />\r\n  </uiResolution>\r\n  <other>\r\n    \
-                    <width value=\"0\" />\r\n  </other>\r\n  <resolutionFullscreen>\
-                    <width value=\"3840\"/><height value=\"2160\" /></resolutionFullscreen>\r\n\
-                    </settings>";
-        let size = OutputSize::parse("1440p").unwrap();
-        let ui = ui_settings_for(text, size);
-        assert_eq!(
-            ui.changed,
-            [
-                ("uiResolution", "0".to_owned(), "0".to_owned()),
-                ("resolutionFullscreen", "3840".to_owned(), "2160".to_owned()),
-            ]
-        );
-        assert!(ui.missing.is_empty());
-        let expected = text
-            .replacen("<width value=\"0\" />", "<width value=\"2560\" />", 1)
-            .replacen("<height value=\"0\" />", "<height value=\"1440\" />", 1)
-            .replace("\"3840\"/>", "\"2560\"/>")
-            .replace("\"2160\" />", "\"1440\" />");
-        assert_eq!(ui.text, expected);
-        // A second pass finds the size already there.
-        let again = ui_settings_for(&ui.text, size);
-        assert!(again.changed.is_empty());
-        assert_eq!(again.text, ui.text);
-    }
-
-    /// A block in another form is left alone and reported.
-    #[test]
-    fn ui_settings_in_another_form_are_left_alone() {
-        let text = "<uiResolution><height value=\"0\" /><width value=\"0\" /></uiResolution>";
-        let ui = ui_settings_for(text, LEGACY_CANVAS);
-        assert!(ui.changed.is_empty());
-        assert_eq!(ui.missing, UI_SETTINGS_BLOCKS);
-        assert_eq!(ui.text, text);
-        let unclosed = "<uiResolution><width value=\"0";
-        assert_eq!(ui_settings_for(unclosed, LEGACY_CANVAS).text, unclosed);
     }
 
     /// The pair the settings load reads, and the patch that resizes it.
