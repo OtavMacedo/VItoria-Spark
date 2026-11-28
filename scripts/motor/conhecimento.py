@@ -19,7 +19,7 @@ VALORES_AB = {"VICTORY_TEXTURE_ROOM_PERCENT": "80/94"}
 # Chaves cujo efeito na memória persiste depois que o braço troca (uma escrita perdida ou adiada fica velha até o
 # fim da execução): no A/B na execução os outros braços herdam esse estado, então o tempo vale e a imagem por
 # braço não; a imagem se julga com execuções separadas.
-IMAGEM_SO_ENTRE_EXECUCOES = ("VICTORY_SKIP_WC_BACK", "VICTORY_MERGE_MASK")
+IMAGEM_SO_ENTRE_EXECUCOES = ("VICTORY_SKIP_WC_BACK", "VICTORY_MERGE_MASK", "VICTORY_WC_NO_BACK")
 # O máximo de fatores de um experimento (`victory_core::ab::MAX_FACTORS`).
 FATORES_MAX = 5
 
