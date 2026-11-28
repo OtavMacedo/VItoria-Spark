@@ -643,6 +643,19 @@ impl Toggle {
     pub fn alternates(&self) -> bool {
         matches!(self.state(), State::Arms(..))
     }
+
+    /// The largest value the switch takes at some time of the run: what a
+    /// thing made once for every arm (a number of threads) is sized by.
+    pub fn most(&self) -> u64 {
+        match self.state() {
+            State::Fixed(v) => *v,
+            State::Arms(per_exp, own) => per_exp
+                .iter()
+                .flatten()
+                .flat_map(|(v, _)| *v)
+                .fold(*own, u64::max),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -874,8 +887,26 @@ mod tests {
         assert!(!FLAG.on() && !FLAG.ever() && !FLAG.alternates());
         assert_eq!(NUMBER.get(), 90);
         assert!(NUMBER.ever());
+        assert_eq!(NUMBER.most(), 90);
         assert_eq!(flag(Some(" 1 ")), 1);
         assert_eq!(flag(Some("alt")), 0);
+    }
+
+    #[test]
+    fn the_most_of_a_toggle_is_its_largest_value_in_any_arm() {
+        let t = Toggle::new("VICTORY_AB_TEST_MOST", |_| 0);
+        assert!(
+            t.state
+                .set(State::Arms(
+                    vec![None, Some(([4, 8], 0)), Some(([6, 2], 1))],
+                    3
+                ))
+                .is_ok()
+        );
+        assert_eq!(t.most(), 8);
+        let t = Toggle::new("VICTORY_AB_TEST_MOST_OWN", |_| 0);
+        assert!(t.state.set(State::Arms(vec![Some(([1, 2], 0))], 5)).is_ok());
+        assert_eq!(t.most(), 5);
     }
 
     #[test]
