@@ -1119,6 +1119,9 @@ impl Summary {
                     .opt_num("vram_used_max_mb", self.vram_used_max_mb)
                     .opt_num("vram_budget_min_mb", self.vram_budget_min_mb)
                     .opt_num("shared_used_max_mb", self.shared_used_max_mb)
+                    // `VICTORY_COUNT_ALLOCS=0`: the log's lines of our own
+                    // allocations say "not counted" instead of numbers.
+                    .bool("own_allocations_counted", crate::alloc_count::counting())
                     .finish(),
             )
             .raw("warnings_top", &warnings)
@@ -1379,6 +1382,13 @@ impl Summary {
             mb(self.vram_budget_min_mb),
             mb(self.shared_used_max_mb)
         );
+        if !crate::alloc_count::counting() {
+            let _ = writeln!(
+                s,
+                "- Alocações nossas: não contadas (VICTORY_COUNT_ALLOCS=0); as linhas \
+                 `memory, what holds it` e `memory, more` dizem \"not counted\""
+            );
+        }
 
         if self.warnings.total() > 0 {
             let _ = writeln!(
@@ -1835,6 +1845,9 @@ mod tests {
         assert_eq!(depth, 0);
         assert!(j.contains("\"first_world_frame_s\":"));
         assert!(j.contains("\"key\":\"v_permlane16_b32\""));
+        // Nothing turned the counting allocator off in this process.
+        assert!(j.contains("\"own_allocations_counted\":true"));
+        assert!(!md.contains("Alocações nossas"));
     }
 
     /// Prints the synthetic run's summary (`cargo test -p victory-core

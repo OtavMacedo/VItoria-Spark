@@ -123,7 +123,12 @@ custam nada.
   contagem (por lista de shaders / por instrução, com nº de shaders).
 - **Dispositivo perdido / TDR**, **Falha** (código, módulo+offset, pilha).
 - **Memória**: RAM livre mínima, falhas de página/s, VRAM (uso máximo,
-  orçamento mínimo, compartilhada).
+  orçamento mínimo, compartilhada). `own_allocations_counted` (no `resumo.json`) diz se as alocações do nosso
+  código foram contadas: com `VICTORY_COUNT_ALLOCS=0` o alocador só repassa cada chamada (sem os contadores, que
+  custam em toda alocação do processo), o `resumo.md` ganha a linha "Alocações nossas: não contadas" e as linhas
+  `memory, what holds it` / `memory, more` do log dizem `not counted` no lugar dos números. A chave é lida uma vez
+  no início do processo e não alterna no `SPARK_AB` (um bloco contado ao nascer e não ao morrer deixaria os totais
+  errados): compara-se com execuções separadas.
 - **Avisos e erros**: top 10 deduplicados (números trocados por `#`).
 - **Próximo alvo**: regras simples sobre os números acima (o diagnóstico completo é o do motor), em ordem:
   falha → dispositivo perdido → não chegou ao mundo → draws descartados
