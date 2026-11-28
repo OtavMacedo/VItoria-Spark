@@ -48,9 +48,13 @@ static RESERVATIONS: Mutex<BTreeMap<usize, Reservation>> = Mutex::new(BTreeMap::
 /// at an address of its choice), with the title's own `kind`, XMem `flags`
 /// and console `protect` (before the runtime cleans them).
 pub fn title_memory_reserved(at: usize, len: usize, kind: u32, flags: u64, protect: u32) {
-    // Kept whenever the skip is on at some time of the run: the arm that
-    // skips needs the reservations made under the other.
-    let wanted = on() || skip_wc_compare() || crate::switches::SKIP_WC_BACK.ever();
+    // Kept whenever the skip (or `VICTORY_WC_NO_BACK`, which asks the same
+    // question per copy) is on at some time of the run: the arm that skips
+    // needs the reservations made under the other.
+    let wanted = on()
+        || skip_wc_compare()
+        || crate::switches::SKIP_WC_BACK.ever()
+        || crate::switches::WC_NO_BACK.ever();
     if !wanted || at == 0 || len == 0 {
         return;
     }

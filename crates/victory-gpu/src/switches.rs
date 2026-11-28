@@ -22,6 +22,13 @@ pub(crate) static PHASES: Toggle = Toggle::flag("SPARK_PHASES");
 /// the arm that skips stays so under the other: a run that alternates it
 /// measures time, not the image.
 pub(crate) static SKIP_WC_BACK: Toggle = Toggle::flag("VICTORY_SKIP_WC_BACK");
+/// `VICTORY_WC_NO_BACK` (`crate::shadow`): shader writes to big copies of
+/// write-combining title memory stay on the card, decided at each
+/// declaration. As with [`SKIP_WC_BACK`], what stayed on the card under one
+/// arm is not brought back under the other, so a run that alternates it
+/// measures time, not the image. Its floor, `VICTORY_WC_NO_BACK_MIN_KB`, is
+/// read once and holds in both arms.
+pub(crate) static WC_NO_BACK: Toggle = Toggle::flag("VICTORY_WC_NO_BACK");
 /// `VICTORY_STEP_INDEX` (`crate::host`).
 pub(crate) static STEP_INDEX: Toggle = Toggle::flag("VICTORY_STEP_INDEX");
 /// `VICTORY_TEXTURE_ROOM_PERCENT` (`crate::resource`): percent, 50 to 97.
@@ -69,7 +76,7 @@ fn uploads_on_copy_queue(value: Option<&str>) -> bool {
 }
 
 /// Every switch above.
-pub static TABLE: [Entry; 13] = [
+pub static TABLE: [Entry; 14] = [
     Entry {
         toggle: &ASYNC_PRESENT,
         part: "preparo",
@@ -116,6 +123,11 @@ pub static TABLE: [Entry; 13] = [
     },
     Entry {
         toggle: &SKIP_WC_BACK,
+        part: "copia_de_volta",
+        inert: &[],
+    },
+    Entry {
+        toggle: &WC_NO_BACK,
         part: "copia_de_volta",
         inert: &[],
     },
