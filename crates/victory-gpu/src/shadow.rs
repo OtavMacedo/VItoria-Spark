@@ -74,6 +74,15 @@ pub(crate) struct Shadow {
     /// A window whose one buffer is in a GPU upload heap ([`window_upload`]):
     /// its bytes, counted with the windows on the card.
     uploaded: u64,
+    /// Whether what shaders write in the copy stays on the card while
+    /// `VICTORY_WC_NO_BACK` is on ([`wc_no_back_applies`]): 0 not decided
+    /// yet, 1 no, 2 yes. Decided at the first declaration, from what a
+    /// copy keeps for its life (where it is, its size, its reservation).
+    wc_stays: AtomicU8,
+    /// The title ranges whose shader writes stayed on the card
+    /// ([`Shadow::wc_stayed`]), joined: where a refresh stores the title's
+    /// bytes over them it may hide what shaders wrote ([`WC_NO_BACK`]).
+    wc_stayed: Mutex<Vec<(usize, usize)>>,
     /// With `crate::inplace`: not a copy at all. `buffer` is placed in a
     /// heap opened on the title memory itself, so shaders read and write
     /// the title's own bytes and nothing is copied either way. The heap,
@@ -2380,6 +2389,211 @@ fn copy_changed() -> bool {
 /// bytes that went on, their stretches, and the refreshes.
 static COPY_CHANGED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
+/// `VICTORY_WC_NO_BACK_MIN_KB` unset or not a number: copies smaller than
+/// this many KiB keep the copy back. Without a floor, small results the
+/// title's CPU reads back (an exposure, a count) come back stale and the
+/// image goes wrong, while nearly all the bytes are in a few copies of
+/// hundreds of MB.
+const WC_NO_BACK_MIN_KB_DEFAULT: u64 = 1024;
+
+/// The smallest copy whose shader writes `VICTORY_WC_NO_BACK` leaves on the
+/// card, in bytes, from `VICTORY_WC_NO_BACK_MIN_KB` (KiB): unset or not a
+/// number [`WC_NO_BACK_MIN_KB_DEFAULT`]; `0` every copy.
+fn wc_no_back_floor_bytes(value: Option<&str>) -> u64 {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(WC_NO_BACK_MIN_KB_DEFAULT)
+        .saturating_mul(1024)
+}
+
+/// [`wc_no_back_floor_bytes`] of the environment, read once.
+fn wc_no_back_floor() -> u64 {
+    static FLOOR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *FLOOR.get_or_init(|| {
+        wc_no_back_floor_bytes(std::env::var("VICTORY_WC_NO_BACK_MIN_KB").ok().as_deref())
+    })
+}
+
+/// Whether, with `VICTORY_WC_NO_BACK=1` (off by default; it may alternate
+/// inside a run, `crate::switches`), what shaders write in a copy stays on
+/// the card: no snapshot, hash, compare, fetch or merge into title memory,
+/// and no flight for the search under flights to settle on. Only for a copy
+/// in the card's memory (`carded`) of at least `floor_bytes`
+/// ([`wc_no_back_floor_bytes`]) whose whole range lies in one reservation
+/// the title asked write-combining (`write_combined`, asked last).
+///
+/// Why: write-combining memory is what the console's CPU writes and the GPU
+/// reads; reading it back is uncached there too, so results the title's
+/// CPU reads go to cacheable memory. Yet most of what the copy back moves
+/// lies in it, and what comes back is mostly read again only by our own
+/// refresh of the same copy.
+///
+/// What it risks:
+/// - The title's CPU reading what shaders wrote there reads older bytes
+///   (why the floor: small copies are where such results live).
+/// - A refresh copies the pages the title wrote whole, as for any copy, so
+///   in a page both wrote the title's older bytes go over the shaders'
+///   (counted: [`WC_NO_BACK`]).
+/// - Another host copy of the same bytes (a texture placed there) does not
+///   see what shaders wrote.
+fn wc_no_back_applies(
+    carded: bool,
+    copy_bytes: u64,
+    floor_bytes: u64,
+    write_combined: impl FnOnce() -> bool,
+) -> bool {
+    carded && copy_bytes >= floor_bytes && write_combined()
+}
+
+/// [`wc_no_back_applies`]'s counts since the start: copies whose shader
+/// writes stay on the card, declarations left there, bytes of title memory
+/// those declarations cover (each byte once per copy), and bytes refreshes
+/// stored from title memory over such ranges.
+static WC_NO_BACK: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+/// The most ranges a copy keeps apart for [`WC_NO_BACK`]'s counts; past it
+/// they are one range from the first to the last (the count may grow).
+const STAYED_RANGES: usize = 64;
+
+/// Adds `range` to `stayed` (in order, apart), joining what touches it:
+/// the bytes newly covered. Past [`STAYED_RANGES`] the ranges are one.
+fn note_stayed(stayed: &mut Vec<(usize, usize)>, range: (usize, usize)) -> u64 {
+    // Dispatches declare the same ranges thousands of times.
+    if range.0 >= range.1 || stayed.iter().any(|&(a, e)| a <= range.0 && range.1 <= e) {
+        return 0;
+    }
+    let before: usize = stayed.iter().map(|&(a, e)| e - a).sum();
+    stayed.push(range);
+    stayed.sort_unstable();
+    let mut joined: Vec<(usize, usize)> = Vec::with_capacity(stayed.len());
+    for &(a, e) in stayed.iter() {
+        match joined.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(e),
+            _ => joined.push((a, e)),
+        }
+    }
+    if joined.len() > STAYED_RANGES {
+        // Joined and in order: the last range ends furthest.
+        joined = vec![(joined[0].0, joined[joined.len() - 1].1)];
+    }
+    *stayed = joined;
+    let after: usize = stayed.iter().map(|&(a, e)| e - a).sum();
+    after.saturating_sub(before) as u64
+}
+
+/// Bytes of `[from, to)` inside `stayed`'s ranges (apart).
+fn overlap_bytes(stayed: &[(usize, usize)], from: usize, to: usize) -> u64 {
+    stayed
+        .iter()
+        .map(|&(a, e)| e.min(to).saturating_sub(a.max(from)))
+        .sum::<usize>() as u64
+}
+
+#[cfg(test)]
+mod wc_no_back_tests {
+    use super::{
+        STAYED_RANGES, WC_NO_BACK_MIN_KB_DEFAULT, note_stayed, overlap_bytes, wc_no_back_applies,
+        wc_no_back_floor_bytes,
+    };
+    use std::cell::Cell;
+
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+
+    #[test]
+    fn the_floor_keeps_small_copies_coming_back_unless_set_to_zero() {
+        assert_eq!(WC_NO_BACK_MIN_KB_DEFAULT, 1024);
+        assert_eq!(wc_no_back_floor_bytes(None), MIB);
+        assert_eq!(wc_no_back_floor_bytes(Some("x")), MIB);
+        assert_eq!(wc_no_back_floor_bytes(Some("")), MIB);
+        assert_eq!(wc_no_back_floor_bytes(Some(" 16 ")), 16 * KIB);
+        assert_eq!(wc_no_back_floor_bytes(Some("0")), 0);
+        assert_eq!(
+            wc_no_back_floor_bytes(Some("18446744073709551615")),
+            u64::MAX
+        );
+    }
+
+    /// Synthetic copies against a synthetic write-combining reservation at
+    /// [16 MiB, 528 MiB): which ones keep the copy back.
+    #[test]
+    fn only_big_card_copies_wholly_in_write_combining_memory_skip_the_copy_back() {
+        let reservation = (16 * MIB, 528 * MIB);
+        let in_wc = |start: u64, len: u64| reservation.0 <= start && start + len <= reservation.1;
+        let floor = wc_no_back_floor_bytes(None);
+        // (carded, start, bytes, stays on the card)
+        let copies = [
+            (true, 16 * MIB, 174 * MIB, true),
+            (true, 20 * MIB, MIB, true),
+            (true, 20 * MIB, MIB - 1, false),
+            (true, 20 * MIB, 4 * KIB, false),
+            (false, 20 * MIB, 64 * MIB, false),
+            (true, 512 * MIB, 32 * MIB, false),
+            (true, 600 * MIB, 64 * MIB, false),
+        ];
+        for (carded, start, bytes, stays) in copies {
+            assert_eq!(
+                wc_no_back_applies(carded, bytes, floor, || in_wc(start, bytes)),
+                stays,
+                "copy at {start:#x}, {bytes} bytes, carded {carded}"
+            );
+        }
+        // With the floor at 0 the small copy in write-combining memory
+        // stays too; one outside it still never does.
+        assert!(wc_no_back_applies(true, 4 * KIB, 0, || in_wc(
+            20 * MIB,
+            4 * KIB
+        )));
+        assert!(!wc_no_back_applies(true, 4 * KIB, 0, || in_wc(
+            600 * MIB,
+            4 * KIB
+        )));
+    }
+
+    #[test]
+    fn the_reservation_is_asked_only_of_big_card_copies() {
+        let asked = Cell::new(0);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            true
+        };
+        assert!(!wc_no_back_applies(false, 64 * MIB, MIB, ask));
+        assert!(!wc_no_back_applies(true, KIB, MIB, ask));
+        assert_eq!(asked.get(), 0);
+        assert!(wc_no_back_applies(true, 64 * MIB, MIB, ask));
+        assert_eq!(asked.get(), 1);
+    }
+
+    #[test]
+    fn ranges_left_on_the_card_are_counted_once_and_joined() {
+        let mut stayed = Vec::new();
+        assert_eq!(note_stayed(&mut stayed, (0x1000, 0x3000)), 0x2000);
+        // The same declaration again, and one inside it: nothing new.
+        assert_eq!(note_stayed(&mut stayed, (0x1000, 0x3000)), 0);
+        assert_eq!(note_stayed(&mut stayed, (0x1800, 0x2000)), 0);
+        assert_eq!(note_stayed(&mut stayed, (0x2000, 0x2000)), 0);
+        // Overlapping and touching ranges join; only new bytes count.
+        assert_eq!(note_stayed(&mut stayed, (0x2800, 0x4000)), 0x1000);
+        assert_eq!(note_stayed(&mut stayed, (0x4000, 0x5000)), 0x1000);
+        assert_eq!(stayed, vec![(0x1000, 0x5000)]);
+        assert_eq!(note_stayed(&mut stayed, (0x8000, 0x9000)), 0x1000);
+        assert_eq!(stayed, vec![(0x1000, 0x5000), (0x8000, 0x9000)]);
+        // A refresh of [0x4800, 0x8800) stores 0x800 + 0x800 bytes over them.
+        assert_eq!(overlap_bytes(&stayed, 0x4800, 0x8800), 0x1000);
+        assert_eq!(overlap_bytes(&stayed, 0x5000, 0x8000), 0);
+    }
+
+    #[test]
+    fn too_many_ranges_become_one() {
+        let mut stayed = Vec::new();
+        for i in 0..=STAYED_RANGES {
+            note_stayed(&mut stayed, (i * 0x2000, i * 0x2000 + 0x1000));
+        }
+        assert_eq!(stayed, vec![(0, STAYED_RANGES * 0x2000 + 0x1000)]);
+        assert_eq!(overlap_bytes(&stayed, 0x1000, 0x2000), 0x1000);
+    }
+}
+
 /// The chunk a refresh by what differs compares at a time
 /// ([`changed_chunks`]): whole chunks go on, so that the compare is the
 /// machine's compare of two blocks and a refresh makes a few stretches,
@@ -3346,6 +3560,8 @@ impl Shadow {
             card: None,
             window: false,
             uploaded: 0,
+            wc_stays: AtomicU8::new(0),
+            wc_stayed: Mutex::default(),
             place: None,
         }
     }
@@ -3361,7 +3577,9 @@ impl Shadow {
     /// (unordered access): after the list's submission has run, the range
     /// is copied back into title memory, where the title reads it; until
     /// then no refresh copies title memory over it. Call after the
-    /// [`Shadow::refresh`] that gives the shaders the title's data.
+    /// [`Shadow::refresh`] that gives the shaders the title's data. With
+    /// `VICTORY_WC_NO_BACK` a big copy of write-combining memory keeps the
+    /// writes on the card instead ([`wc_no_back_applies`]).
     ///
     /// shortcut: what shaders wrote is found by keeping the range's bytes
     /// before the submission (a copy per declared range and submission);
@@ -3380,7 +3598,63 @@ impl Shadow {
             return;
         }
         let len = len.min(self.left(address));
+        // Cut here, before the range is pending: no snapshot, hash, compare,
+        // fetch or merge, and no flight for the search under flights to
+        // wait on (`VICTORY_WC_NO_BACK`).
+        if crate::switches::WC_NO_BACK.on() && self.wc_stays() {
+            self.wc_stayed(address as usize, len as usize);
+            return;
+        }
         list.defer_gpu_write(self, address as usize, len as usize);
+    }
+
+    /// Whether what shaders write in this copy stays on the card under
+    /// `VICTORY_WC_NO_BACK` ([`wc_no_back_applies`]); decided once.
+    fn wc_stays(&self) -> bool {
+        match self.wc_stays.load(Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                let (start, end) = (self.start as usize, (self.start + self.len) as usize);
+                let stays =
+                    wc_no_back_applies(self.card.is_some(), self.len, wc_no_back_floor(), || {
+                        crate::census::all_wc(&[(start, end)])
+                    });
+                self.wc_stays
+                    .store(if stays { 2 } else { 1 }, Ordering::Relaxed);
+                if stays {
+                    WC_NO_BACK[0].fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(
+                        copy = self.id,
+                        start = format_args!("{start:#x}"),
+                        bytes = self.len,
+                        "shader writes to this copy of write-combining title memory stay on the card (VICTORY_WC_NO_BACK)"
+                    );
+                }
+                stays
+            }
+        }
+    }
+
+    /// Notes `[address, address + len)` as written by shaders with the
+    /// writes left on the card, for [`WC_NO_BACK`]'s counts.
+    fn wc_stayed(&self, address: usize, len: usize) {
+        let added = {
+            let mut stayed = self.wc_stayed.lock().unwrap_or_else(|e| e.into_inner());
+            note_stayed(&mut stayed, (address, address + len))
+        };
+        WC_NO_BACK[2].fetch_add(added, Ordering::Relaxed);
+        let n = WC_NO_BACK[1].fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() && n >= 1024 {
+            tracing::info!(
+                "VICTORY_WC_NO_BACK, since the start: {n} declarations of shader writes left on the card, in {} copies, \
+                 over {} MB of title memory; refreshes stored {} MB of the title's bytes over those ranges \
+                 (in pages shaders wrote too, what they wrote there is gone)",
+                WC_NO_BACK[0].load(Ordering::Relaxed),
+                WC_NO_BACK[2].load(Ordering::Relaxed) >> 20,
+                WC_NO_BACK[3].load(Ordering::Relaxed) >> 20,
+            );
+        }
     }
 
     /// At submission, after the range's refresh: a submitted list's shaders
@@ -4477,6 +4751,10 @@ impl Shadow {
         let _reads_as = crate::backreads::reading_as(crate::backreads::REFRESH, self.id);
         let (start, end) = (self.start as usize, (self.start + self.len) as usize);
         let (from, to) = (from.max(start), to.min(end));
+        if self.wc_stays.load(Ordering::Relaxed) == 2 && from < to {
+            let stayed = self.wc_stayed.lock().unwrap_or_else(|e| e.into_inner());
+            WC_NO_BACK[3].fetch_add(overlap_bytes(&stayed, from, to), Ordering::Relaxed);
+        }
         if self.card.is_some() && from < to && copy_changed() && self.copy_changed(from, to) {
             return to - from;
         }
