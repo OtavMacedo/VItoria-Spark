@@ -954,6 +954,18 @@ fn log_memory() {
         mb(own[3]),
         own[7],
     );
+    let backs: Vec<u64> = crate::host::READ_BACKS
+        .iter()
+        .map(|b| b.load(Relaxed))
+        .collect();
+    tracing::info!(
+        "memory, read-back buffers since the start: {} made, {} taken from those kept; when their \
+         lists were done {} kept and {} let go (VICTORY_READ_BACK_POOL)",
+        backs[0],
+        backs[1],
+        backs[2],
+        backs[3],
+    );
     // Round 2: what the view table still holds and what goes around it,
     // what host lists cost, the card's share that is the layer's own or
     // the title's no more, and which big blocks are ours.
