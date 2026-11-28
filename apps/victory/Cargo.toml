@@ -15,11 +15,15 @@ victory-hle.workspace = true
 victory-gpu.workspace = true
 victory-shader = { workspace = true, features = ["host"] }
 victory-game.workspace = true
+victory-formats.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 memchr.workspace = true
 clap.workspace = true
 walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [features]
 # mimalloc as the process's allocator instead of the system heap: per-thread

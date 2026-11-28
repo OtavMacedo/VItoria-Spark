@@ -115,6 +115,21 @@ enum Command {
     },
     /// Show the resolved configuration and check it.
     Config,
+    /// Check NVIDIA Streamline and DLSS Super Resolution on this PC without
+    /// the title (`VICTORY_STREAMLINE_DIR`, `VICTORY_DLSS_MODE`,
+    /// `VICTORY_DLSS_PRESET`): what loads and whether this GPU supports
+    /// DLSS; with --device, the host device handed over and DLSS run three
+    /// times on stand-in textures.
+    #[cfg(windows)]
+    UpscalerCheck {
+        /// The output size: `1440p` or `<width>x<height>` (16:9, 2560x1440 to
+        /// 3840x2160, the sizes the title makes).
+        #[arg(long, default_value = "1440p")]
+        output: String,
+        /// Make the host device and run DLSS on it.
+        #[arg(long)]
+        device: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -199,6 +214,15 @@ fn main() -> Result<()> {
             run::run(&exe, unimplemented, strict, execute, console)
         }
         Command::Config => show_config(),
+        #[cfg(windows)]
+        Command::UpscalerCheck { output, device } => {
+            let size = victory_game::output::OutputSize::parse(&output)
+                .map_err(|e| anyhow::anyhow!("--output: {e}"))?;
+            for line in victory_gpu::streamline::check([size.width, size.height], device) {
+                println!("{line}");
+            }
+            Ok(())
+        }
     }
 }
 

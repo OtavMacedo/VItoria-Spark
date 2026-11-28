@@ -1458,6 +1458,9 @@ fn create() -> windows::core::Result<Host> {
         let messages = debug
             .then(|| device.cast::<ID3D12InfoQueue>().ok())
             .flatten();
+        // DLSS (`VICTORY_DLSS`): Streamline is given the device before any
+        // work is recorded on it.
+        crate::streamline::device_made(&device);
         let queue: ID3D12CommandQueue = device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
             Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
             ..Default::default()

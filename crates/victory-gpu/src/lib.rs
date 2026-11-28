@@ -47,6 +47,8 @@ mod draw;
 #[cfg(windows)]
 mod drvwatch;
 pub mod dxgi;
+#[cfg(windows)]
+mod external;
 pub mod fence;
 #[cfg(windows)]
 mod fpsbox;
@@ -98,6 +100,9 @@ pub mod signature;
 mod spread;
 #[cfg(windows)]
 mod stats;
+/// DLSS Super Resolution through NVIDIA Streamline (`VICTORY_DLSS`).
+#[cfg(windows)]
+pub mod streamline;
 /// The switches that may alternate inside a run.
 pub mod switches;
 #[cfg(windows)]
