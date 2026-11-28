@@ -318,7 +318,58 @@ pub(crate) fn range(src: usize, len: usize, us: u64, kind: u32) {
 /// runtime and of the driver alike (3.5 GB in run 60's gameplay, growing by
 /// some 2 MB a frame, and nothing said whose): this says which part is
 /// ours. Bigger blocks are allocations of their own in the map.
-static OWN: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+///
+/// In sets ([`OwnBank`]), summed when read ([`owned`]): one set for every
+/// thread had all of them wait for each other's line of memory at every
+/// allocation and release. The first [`OWN_SOLE`] threads to allocate have
+/// a set each and change it with a plain load and store (no locked
+/// instruction: no other thread writes it); the threads after them share
+/// the last [`OWN_SHARED`] sets with atomic additions. A block made by one
+/// thread and released by another leaves one set below zero: the sum,
+/// wrapping, is right. (Sets per thread as in trustno1-coder/VIctory-NVIDIA
+/// commit 66c935ea; the sets of a thread of its own are new here.)
+static OWN: [OwnBank; OWN_SOLE + OWN_SHARED] =
+    [const { OwnBank([const { AtomicU64::new(0) }; 8]) }; OWN_SOLE + OWN_SHARED];
+
+/// Sets of [`OWN`] that a thread has for itself.
+const OWN_SOLE: usize = 48;
+/// Sets of [`OWN`] shared by the threads after the first [`OWN_SOLE`].
+const OWN_SHARED: usize = 16;
+
+/// One set of [`OWN`], on a line of the processor's memory of its own.
+#[repr(align(64))]
+struct OwnBank([AtomicU64; 8]);
+
+/// The set of [`OWN`] of the `n`-th thread to allocate (from 0).
+fn own_bank_of(n: usize) -> usize {
+    if n < OWN_SOLE {
+        n
+    } else {
+        OWN_SOLE + (n - OWN_SOLE) % OWN_SHARED
+    }
+}
+
+/// This thread's set of [`OWN`]. (Asked by the allocator: nothing here
+/// allocates, and the thread's own slot needs no destructor.)
+#[inline]
+fn own_bank() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    thread_local!(static MINE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) });
+    MINE.try_with(|mine| {
+        if mine.get() == usize::MAX {
+            mine.set(own_bank_of(NEXT.fetch_add(1, Relaxed)));
+        }
+        mine.get()
+    })
+    // A shared set, never one a thread has for itself.
+    .unwrap_or(OWN_SOLE)
+}
+
+/// Count `i` of [`OWN`], all sets together.
+fn owned(i: usize) -> u64 {
+    OWN.iter()
+        .fold(0u64, |sum, b| sum.wrapping_add(b.0[i].load(Relaxed)))
+}
 
 /// The class of [`OWN`] a block of `size` bytes counts in.
 fn block_class(size: usize) -> usize {
@@ -330,15 +381,35 @@ fn block_class(size: usize) -> usize {
     }
 }
 
-fn own(size: usize, made: bool) {
+/// Counts a block of `size` bytes made or released in set `bank`; `sole`:
+/// no other thread writes the set.
+fn count_in(bank: &OwnBank, sole: bool, size: usize, made: bool) {
     let class = block_class(size);
-    if made {
-        OWN[class].fetch_add(size as u64, Relaxed);
-        OWN[4 + class].fetch_add(1, Relaxed);
+    let (bytes, blocks) = if made {
+        (size as u64, 1)
     } else {
-        OWN[class].fetch_sub(size as u64, Relaxed);
-        OWN[4 + class].fetch_sub(1, Relaxed);
+        ((size as u64).wrapping_neg(), u64::MAX)
+    };
+    for (slot, n) in [(class, bytes), (4 + class, blocks)] {
+        let c = &bank.0[slot];
+        if sole {
+            c.store(c.load(Relaxed).wrapping_add(n), Relaxed);
+        } else {
+            c.fetch_add(n, Relaxed);
+        }
     }
+}
+
+fn own(size: usize, made: bool) {
+    let bank = own_bank();
+    count_in(&OWN[bank], bank < OWN_SOLE, size, made);
+}
+
+/// What the memory lines show for our own allocations with
+/// `VICTORY_COUNT_ALLOCS=0` (where they would otherwise show zeros), or
+/// `None` while they are counted.
+fn own_not_counted() -> Option<&'static str> {
+    (!counting()).then_some("not counted (VICTORY_COUNT_ALLOCS=0)")
 }
 
 /// Our own blocks of [`BIG`] bytes and more alive now: where each is (0:
@@ -400,9 +471,17 @@ use mimalloc::MiMalloc as Inner;
 use std::alloc::System as Inner;
 
 /// The process's allocator ([`Inner`]) with every block counted in [`OWN`]
-/// (two atomic additions per allocation and per release: diagnostics
-/// builds only).
+/// (two additions per allocation and per release, in this thread's set),
+/// and the big ones listed in [`BIG_AT`]. With `VICTORY_COUNT_ALLOCS=0`
+/// ([`victory_core::alloc_count`]) it only hands each call to [`Inner`]: no
+/// counter is touched, and the memory lines say so.
 struct Counting;
+
+/// Whether [`Counting`] counts (one load of a value written once, early).
+#[inline]
+fn counting() -> bool {
+    victory_core::alloc_count::counting()
+}
 
 // SAFETY: every call goes to [`Inner`] unchanged; only
 // counters are kept beside it.
@@ -410,7 +489,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         // SAFETY: the caller's contract, passed on.
         let at = unsafe { Inner.alloc(layout) };
-        if !at.is_null() {
+        if !at.is_null() && counting() {
             own(layout.size(), true);
             big(at, layout.size(), true);
         }
@@ -420,7 +499,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
         // SAFETY: the caller's contract, passed on.
         let at = unsafe { Inner.alloc_zeroed(layout) };
-        if !at.is_null() {
+        if !at.is_null() && counting() {
             own(layout.size(), true);
             big(at, layout.size(), true);
         }
@@ -428,8 +507,10 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     }
 
     unsafe fn dealloc(&self, at: *mut u8, layout: std::alloc::Layout) {
-        own(layout.size(), false);
-        big(at, layout.size(), false);
+        if counting() {
+            own(layout.size(), false);
+            big(at, layout.size(), false);
+        }
         // SAFETY: the caller's contract, passed on.
         unsafe { Inner.dealloc(at, layout) };
     }
@@ -437,7 +518,7 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn realloc(&self, at: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
         // SAFETY: the caller's contract, passed on.
         let moved = unsafe { Inner.realloc(at, layout, size) };
-        if !moved.is_null() {
+        if !moved.is_null() && counting() {
             own(layout.size(), false);
             own(size, true);
             big(at, layout.size(), false);
@@ -497,8 +578,93 @@ mod counter_tests {
 
 #[cfg(test)]
 mod own_tests {
-    use super::{OWN, block_class};
-    use std::sync::atomic::Ordering::Relaxed;
+    use super::{OWN_SHARED, OWN_SOLE, OwnBank, block_class, count_in, own_bank_of, owned};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    fn bank() -> OwnBank {
+        OwnBank([const { AtomicU64::new(0) }; 8])
+    }
+
+    fn sum(banks: &[OwnBank], i: usize) -> u64 {
+        banks
+            .iter()
+            .fold(0u64, |s, b| s.wrapping_add(b.0[i].load(Relaxed)))
+    }
+
+    /// The first threads have a set each; the ones after share the last
+    /// sets, never one of the first.
+    #[test]
+    fn the_first_threads_have_a_set_each() {
+        for n in 0..OWN_SOLE {
+            assert_eq!(own_bank_of(n), n);
+        }
+        for n in OWN_SOLE..OWN_SOLE + 4 * OWN_SHARED {
+            let b = own_bank_of(n);
+            assert!((OWN_SOLE..OWN_SOLE + OWN_SHARED).contains(&b), "{n} -> {b}");
+        }
+        assert_eq!(own_bank_of(OWN_SOLE), own_bank_of(OWN_SOLE + OWN_SHARED));
+    }
+
+    /// A set of one thread and a shared one count the same.
+    #[test]
+    fn sole_and_shared_sets_count_the_same() {
+        let (a, b) = (bank(), bank());
+        for (size, made) in [(100, true), (5000, true), (100, false), (2 << 20, true)] {
+            count_in(&a, true, size, made);
+            count_in(&b, false, size, made);
+        }
+        for i in 0..8 {
+            assert_eq!(a.0[i].load(Relaxed), b.0[i].load(Relaxed), "slot {i}");
+        }
+        assert_eq!(a.0[0].load(Relaxed), 0);
+        assert_eq!(a.0[4].load(Relaxed), 0);
+        assert_eq!(a.0[1].load(Relaxed), 5000);
+        assert_eq!(a.0[3].load(Relaxed), 2 << 20);
+        assert_eq!(a.0[7].load(Relaxed), 1);
+    }
+
+    /// A block made in one set and released in another leaves that one
+    /// below zero; the sum of the sets is what one counter would hold.
+    #[test]
+    fn the_sets_sum_to_one_counter() {
+        let banks: Vec<OwnBank> = (0..4).map(|_| bank()).collect();
+        let one = bank();
+        let steps = [
+            (0, 300, true),
+            (1, 70_000, true),
+            (2, 300, false),
+            (3, 9000, true),
+            (0, 70_000, false),
+            (1, 64, true),
+        ];
+        for (at, size, made) in steps {
+            count_in(&banks[at], at % 2 == 0, size, made);
+            count_in(&one, false, size, made);
+        }
+        assert!(
+            banks[2].0[4].load(Relaxed) > u64::MAX / 2,
+            "a set below zero"
+        );
+        for i in 0..8 {
+            assert_eq!(sum(&banks, i), one.0[i].load(Relaxed), "slot {i}");
+        }
+        assert_eq!(sum(&banks, 0), 64);
+        assert_eq!(sum(&banks, 4), 1);
+        assert_eq!(sum(&banks, 2), 0);
+    }
+
+    /// Blocks made on other threads and released on this one: the
+    /// process's sum does not go below zero.
+    #[test]
+    fn blocks_released_on_another_thread_sum_right() {
+        let blocks: Vec<Vec<u8>> = (0..8)
+            .map(|_| std::thread::spawn(|| vec![7u8; 4 << 20]).join().unwrap())
+            .collect();
+        assert!(owned(3) >= 32 << 20);
+        drop(blocks);
+        assert!(owned(3) < u64::MAX / 2, "no count below zero");
+        assert!(owned(7) < u64::MAX / 2, "no count below zero");
+    }
 
     #[test]
     fn blocks_count_in_their_size_class() {
@@ -537,10 +703,10 @@ mod own_tests {
     #[test]
     fn a_block_is_counted_while_it_lives() {
         let block = vec![1u8; 8 << 20];
-        assert!(OWN[3].load(Relaxed) >= 8 << 20);
-        assert!(OWN[7].load(Relaxed) >= 1);
+        assert!(owned(3) >= 8 << 20);
+        assert!(owned(7) >= 1);
         drop(block);
-        assert!(OWN[7].load(Relaxed) < u64::MAX / 2, "no count below zero");
+        assert!(owned(7) < u64::MAX / 2, "no count below zero");
     }
 }
 
@@ -920,9 +1086,27 @@ fn log_memory() {
     let alive: Vec<u64> = crate::host::ALIVE.iter().map(|a| a.load(Relaxed)).collect();
     let window = crate::shadow::window_use();
     let views = crate::descriptor::views_kept();
-    let own: Vec<u64> = OWN.iter().map(|o| o.load(Relaxed)).collect();
+    let own = own_not_counted().map_or_else(
+        || {
+            let own: Vec<u64> = (0..8).map(owned).collect();
+            format!(
+                "{:.0} MB in {} blocks (under 4 KiB          {:.0} MB in {}, to 64 KiB {:.0} MB in {}, to 1 MiB {:.0} MB in {}, larger {:.0} MB in {})",
+                mb(own[..4].iter().sum()),
+                own[4..].iter().sum::<u64>(),
+                mb(own[0]),
+                own[4],
+                mb(own[1]),
+                own[5],
+                mb(own[2]),
+                own[6],
+                mb(own[3]),
+                own[7],
+            )
+        },
+        str::to_owned,
+    );
     tracing::info!(
-        "memory, what holds it: {} host lists alive; their scratch memory: {} chunks {:.0} MB, of          them {} chunks {:.0} MB spare ({} taken from the spare ones so far); their other upload          buffers: {} alive {:.0} MB; windows outside buffers (grid {} KiB): {:.0} MB of their          pages ever copied, {} shown by descriptor slots {:.0} MB, {} held by lists or the pass          over the heap {:.0} MB, {} asked for without a length {:.0} MB; buffer views of the heap          whose slot showed another copy than the one brought up to date: {}; distinct views          kept: {} ({} free) {:.0} MB; our own allocations: {:.0} MB in {} blocks (under 4 KiB          {:.0} MB in {}, to 64 KiB {:.0} MB in {}, to 1 MiB {:.0} MB in {}, larger {:.0} MB in {})",
+        "memory, what holds it: {} host lists alive; their scratch memory: {} chunks {:.0} MB, of          them {} chunks {:.0} MB spare ({} taken from the spare ones so far); their other upload          buffers: {} alive {:.0} MB; windows outside buffers (grid {} KiB): {:.0} MB of their          pages ever copied, {} shown by descriptor slots {:.0} MB, {} held by lists or the pass          over the heap {:.0} MB, {} asked for without a length {:.0} MB; buffer views of the heap          whose slot showed another copy than the one brought up to date: {}; distinct views          kept: {} ({} free) {:.0} MB; our own allocations: {}",
         alive[0],
         alive[1],
         mb(alive[2]),
@@ -943,16 +1127,7 @@ fn log_memory() {
         views[0],
         views[1],
         mb(views[2]),
-        mb(own[..4].iter().sum()),
-        own[4..].iter().sum::<u64>(),
-        mb(own[0]),
-        own[4],
-        mb(own[1]),
-        own[5],
-        mb(own[2]),
-        own[6],
-        mb(own[3]),
-        own[7],
+        own,
     );
     let backs: Vec<u64> = crate::host::READ_BACKS
         .iter()
@@ -991,7 +1166,7 @@ fn log_memory() {
         mb(census[8]),
         mb(census[9]),
         mb(kept[6]),
-        big_blocks(),
+        own_not_counted().map_or_else(big_blocks, str::to_owned),
     );
     // Round 3: whether windows hold the same memory more than once (they
     // can, once they are cut finer than 4 MiB), and how many host lists

@@ -145,6 +145,9 @@ enum Console {
 }
 
 fn main() -> Result<()> {
+    // Before anything else: whether the counting allocator counts
+    // (`VICTORY_COUNT_ALLOCS`); it counts until this is read.
+    victory_core::alloc_count::init();
     victory_core::logging::init("info");
     // The audio recorder `run` starts for `VICTORY_AUDIO_CAPTURE`.
     #[cfg(all(windows, feature = "diagnostics"))]
