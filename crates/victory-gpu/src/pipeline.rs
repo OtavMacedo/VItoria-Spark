@@ -67,6 +67,10 @@ pub(crate) struct Shader {
     /// ([`Shader::walks`]).
     #[cfg(windows)]
     walks: OnceLock<bool>,
+    /// The digest of its `HASH` part, which console programs name their
+    /// source container by ([`console`]).
+    #[cfg(windows)]
+    digest: Option<[u8; 16]>,
 }
 
 impl std::fmt::Debug for Shader {
@@ -106,10 +110,12 @@ pub(crate) fn kept() -> [u64; 7] {
 fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
     let full = blake3::hash(bytes);
     let mut shaders = SHADERS.lock().unwrap_or_else(|e| e.into_inner());
-    shaders
+    let mut new = false;
+    let shader = shaders
         .get_or_insert_with(HashMap::new)
         .entry(*full.as_bytes())
         .or_insert_with(|| {
+            new = true;
             KEPT[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             KEPT[1].fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             Arc::new(Shader {
@@ -120,9 +126,19 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
                 translated: OnceLock::new(),
                 #[cfg(windows)]
                 walks: OnceLock::new(),
+                #[cfg(windows)]
+                digest: console::container_digest(bytes),
             })
         })
-        .clone()
+        .clone();
+    drop(shaders);
+    #[cfg(windows)]
+    if new {
+        console::file(&shader);
+    }
+    #[cfg(not(windows))]
+    let _ = new;
+    shader
 }
 
 /// A translated shader and the console resources its code reads.
@@ -741,12 +757,28 @@ pub(crate) extern "system" fn create_compute(
     iid: *const Iid,
     out: *mut This,
 ) -> HRESULT {
+    compute_from(desc, iid, out, "0x58")
+}
+
+/// A compute pipeline from the plain description, which device method
+/// `method` (as logged) passed.
+fn compute_from(
+    desc: *const ComputeHead,
+    iid: *const Iid,
+    out: *mut This,
+    #[cfg_attr(not(windows), allow(unused_variables))] method: &'static str,
+) -> HRESULT {
     // SAFETY: the title passes a description (null is tolerated).
     let Some(desc) = (unsafe { desc.as_ref() }) else {
         return E_INVALIDARG;
     };
+    let shader = copy("compute", &desc.stage);
+    #[cfg(windows)]
+    if let Some(shader) = &shader {
+        console::note_standard(shader, method);
+    }
     hand_out(
-        copy("compute", &desc.stage).into_iter().collect(),
+        shader.into_iter().collect(),
         #[cfg(windows)]
         None,
         iid,
@@ -759,14 +791,14 @@ pub(crate) extern "system" fn create_compute(
 /// shortcut: the extensions (console shader settings) are ignored, as is
 /// the rest of the description.
 pub(crate) extern "system" fn create_compute_x(
-    this: This,
+    _: This,
     desc: *const ComputeHead,
     _extensions: u32,
     _extended: *const u8,
     iid: *const Iid,
     out: *mut This,
 ) -> HRESULT {
-    create_compute(this, desc, iid, out)
+    compute_from(desc, iid, out, "0x1f0")
 }
 
 /// A pipeline described as a stream: its size and the subobjects, each a
@@ -838,7 +870,12 @@ pub(crate) extern "system" fn create_stream(
         if let Some(stage) = stage {
             // SAFETY: a shader subobject has its bytecode at +8.
             let code = unsafe { &*desc.stream.add(at + 8).cast::<Bytecode>() };
-            shaders.extend(copy(stage, code));
+            let shader = copy(stage, code);
+            #[cfg(windows)]
+            if let Some(shader) = shader.as_ref().filter(|_| stage == "compute") {
+                console::note_standard(shader, "0x2b0");
+            }
+            shaders.extend(shader);
         }
         #[cfg(windows)]
         // SAFETY: a whole subobject of this kind lies at `at`.
@@ -884,6 +921,8 @@ static FUNCTIONS: Table<24> = {
     Table(f)
 };
 
+#[cfg(windows)]
+pub(crate) mod console;
 #[cfg(windows)]
 pub(crate) mod host;
 #[cfg(windows)]
