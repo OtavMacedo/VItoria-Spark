@@ -509,7 +509,7 @@ mod gpu {
             // SAFETY: the allocation's bytes.
             let title = unsafe { std::slice::from_raw_parts_mut(base as *mut u8, LEN) };
             title.iter_mut().for_each(|b| *b = next() as u8);
-            crate::shadow::register(base, base as u64, LEN as u64);
+            crate::shadow::register(base, base as u64, LEN as u64, false);
             let copy = crate::shadow::find(base as u64, LEN as u64).expect("the copy");
             assert!(copy.carded(), "the copy must be in the card's memory");
             let list = host.new_list().unwrap();
