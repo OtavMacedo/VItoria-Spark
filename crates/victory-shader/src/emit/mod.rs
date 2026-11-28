@@ -92,6 +92,9 @@ pub mod host;
 mod image_lod_tests;
 #[cfg(all(test, windows))]
 mod intersect_tests;
+mod lds_exact;
+#[cfg(test)]
+mod lds_exact_tests;
 mod lower;
 mod own_bits;
 mod rect;
@@ -407,6 +410,12 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
     emit(&c, &native, &p, &st, &io, &res)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The group-shared memory (dwords) of the program `emit_program` made last on this thread.
+    static TEST_LAST_LDS_DWORDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 thread_local! {
     /// [`with_wave_wide`]'s choice, for this thread's translations.
     static WAVE_WIDE_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -637,6 +646,38 @@ pub fn emit(
                 }
             }
         }
+        // After everything else (`VICTORY_LDS_EXACT=1`): the lane-branch regions of LDS that
+        // need no order between the halves ([`lds_exact`]), in each form above whole, and as the
+        // allocation idiom's local waves. Only here, so that a program that translates without
+        // them keeps its form.
+        if lds_exact::switch() {
+            let mut bases = Vec::new();
+            for (name, f) in &forms {
+                if let Some((p, st, io, res)) = f {
+                    bases.push((*name, p, st, io, res));
+                }
+            }
+            bases.push(("as it is", p, st, io, res));
+            for (name, p, st, io, res) in bases {
+                let whole = lds_exact::with_exact(|| emit_program(c, native, p, st, io, res));
+                report(&format!("exact LDS regions, {name}"), &whole);
+                if done(&whole) {
+                    return whole.map(|(shader, _)| shader);
+                }
+                if local_on && !exact_only && lds_exact::with_exact(|| idiom(p, st)) {
+                    let local = lds_exact::with_exact(|| {
+                        lower::with_local_waves(|| emit_program(c, native, p, st, io, res))
+                    });
+                    report(
+                        &format!("exact LDS regions, local waves (idiom), {name}"),
+                        &local,
+                    );
+                    if done(&local) {
+                        return local.map(|(shader, _)| shader);
+                    }
+                }
+            }
+        }
     }
     // SCC of a mask operation joined with a scalar test behind a per-lane skip (the 32-lane
     // trace programs): right once the wave takes that skip together ([`widen`]; the
@@ -829,6 +870,8 @@ fn emit_program(
         mesh_stride,
     })?;
     let wave_size = l.wave_size;
+    #[cfg(test)]
+    TEST_LAST_LDS_DWORDS.set(l.lds_dwords);
     let shader = HostShader {
         stage: native.stage,
         dxil: l.dxil,
